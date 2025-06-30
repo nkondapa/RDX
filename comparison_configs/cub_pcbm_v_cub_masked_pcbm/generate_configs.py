@@ -39,5 +39,5 @@ bash_output_folder = '../../'
 with open(f'{os.path.join(bash_output_folder, experiment_folder)}.sh', 'w') as f:
     f.write(f'#!/bin/bash\n')
     for config in configs:
-        f.write(f'python generate_comparison_explanations.py --comparison_config "{config}" --comparison_output_root outputs2/{experiment_folder} --save_m0_representation  --save_m1_representation \n')
+        f.write(f'python generate_comparison_explanations.py --comparison_config "{config}" --comparison_output_root outputs/{experiment_folder} --save_m0_representation  --save_m1_representation \n')
 
