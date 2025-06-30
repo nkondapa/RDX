@@ -1,5 +1,4 @@
 {
-  "comparison_name": "butterflies_repr",
   "seed": 42,
   "move_to_cpu_in_hook": false,
   "image_selection": {
@@ -17,14 +16,14 @@
   "representation_params": {
     "repr_0": {
       "model": "mnist_835",
-      "model_ckpt": "/home/nkondapa/PycharmProjects/ConceptDiff/checkpoints/mnist_835/epoch=1-step=184.ckpt",
+      "model_ckpt": "./checkpoints/mnist_835/epoch=1-step=184.ckpt",
       "feature_extraction_params": {
         "feature_layer_version": "v0"
       }
     },
     "repr_1": {
       "model": "mnist_835",
-      "model_ckpt": "/home/nkondapa/PycharmProjects/ConceptDiff/checkpoints/mnist_835/last.ckpt",
+      "model_ckpt": "./checkpoints/mnist_835/last.ckpt",
       "feature_extraction_params": {
         "feature_layer_version": "v0"
       }
@@ -44,12 +43,12 @@
     {
       "method": "sae",
       "d_sae": 3,
-      "n_epochs": 500,
+      "n_epochs": 100,
       "lr": 0.001,
       "n_lr_warmup": 10,
       "sparsity_coeff": 0.0004,
       "n_sparsity_warmup": 0,
-      "sae_batch_size": 2000,
+      "sae_batch_size": 128,
       "n_workers": 4,
       "device": "cuda",
       "seed": 42,
@@ -71,8 +70,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_nb_lb_spectral",
+      "method": "rdx",
+      "method_name": "rdx_nb_lb_spectral",
       "sim_function": "neighborhood",
       "diff_function": "locally_biased",
       "clustering_method": "spectral",
@@ -113,7 +112,8 @@
           0
         ],
         "axes_pad": 0.05,
-        "cl_summ_pad": 25
+        "cl_summ_pad": 25,
+        "visualize_coeffs": true
       }
     },
     {

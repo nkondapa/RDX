@@ -1,5 +1,4 @@
 {
-  "comparison_name": "butterflies_repr",
   "seed": 42,
   "move_to_cpu_in_hook": false,
   "image_selection": {
@@ -17,14 +16,14 @@
   "representation_params": {
     "repr_0": {
       "model": "mnist_835",
-      "model_ckpt": "/home/nkondapa/PycharmProjects/ConceptDiff/checkpoints/mnist_835/epoch=0-step=136.ckpt",
+      "model_ckpt": "./checkpoints/mnist_835/epoch=0-step=136.ckpt",
       "feature_extraction_params": {
         "feature_layer_version": "v0"
       }
     },
     "repr_1": {
       "model": "mnist_835",
-      "model_ckpt": "/home/nkondapa/PycharmProjects/ConceptDiff/checkpoints/mnist_835/last.ckpt",
+      "model_ckpt": "./checkpoints/mnist_835/last.ckpt",
       "feature_extraction_params": {
         "feature_layer_version": "v0"
       }
@@ -71,8 +70,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_nb_lb_spectral",
+      "method": "rdx",
+      "method_name": "rdx_nb_lb_spectral",
       "sim_function": "neighborhood",
       "diff_function": "locally_biased",
       "clustering_method": "spectral",

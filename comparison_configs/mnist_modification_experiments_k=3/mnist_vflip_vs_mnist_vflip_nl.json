@@ -1,0 +1,292 @@
+{
+  "seed": 42,
+  "move_to_cpu_in_hook": false,
+  "image_selection": {
+    "dataset_name": "mnist_vflip_nl",
+    "dataset_root": "/home/nkondapa/Datasets/mnist_data/MNIST/",
+    "dataset_split": "train",
+    "transform_type": "test",
+    "patchify": false,
+    "patch_size": 64,
+    "image_group_strategy": "ground_truth",
+    "num_images": 250,
+    "seed": 0,
+    "group_all_images": true
+  },
+  "representation_params": {
+    "repr_0": {
+      "model": "mnist_vflip",
+      "model_ckpt": "./checkpoints/mnist_vflip/last.ckpt",
+      "feature_extraction_params": {
+        "feature_layer_version": "v0"
+      }
+    },
+    "repr_1": {
+      "model": "mnist_vflip_nl",
+      "model_ckpt": "./checkpoints/mnist_vflip_nl/last.ckpt",
+      "feature_extraction_params": {
+        "feature_layer_version": "v0"
+      }
+    }
+  },
+  "only_last_layer": true,
+  "methods": [
+    {
+      "method": "rdc",
+      "method_name": "rdc_nb_lb_spectral",
+      "sim_function": "neighborhood",
+      "diff_function": "locally_biased",
+      "clustering_method": "spectral",
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "gamma": 0.1,
+      "beta": 5,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "rdc",
+      "method_name": "rdc_nb_s_spectral",
+      "sim_function": "neighborhood",
+      "diff_function": "standard",
+      "clustering_method": "spectral",
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "normalize_diff_mat_by_abs_max": true,
+      "gamma": 0.1,
+      "beta": 5,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "rdc",
+      "method_name": "rdc_nb_lb_pagerank",
+      "sim_function": "neighborhood",
+      "diff_function": "locally_biased",
+      "clustering_method": "pagerank",
+      "cluster_size": 9,
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "normalize_diff_mat_by_abs_max": true,
+      "gamma": 0.1,
+      "beta": 5,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "rdc",
+      "method_name": "rdc_nb_s_pagerank",
+      "sim_function": "neighborhood",
+      "diff_function": "standard",
+      "clustering_method": "pagerank",
+      "cluster_size": 9,
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "normalize_diff_mat_by_abs_max": true,
+      "gamma": 0.1,
+      "beta": 5,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "rdc",
+      "method_name": "rdc_zpls_lb_spectral",
+      "sim_function": "zp_local_scaling",
+      "diff_function": "locally_biased",
+      "clustering_method": "spectral",
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "normalize_diff_mat_by_abs_max": false,
+      "gamma": 0.1,
+      "beta": 5,
+      "sigma": 7,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "rdc",
+      "method_name": "rdc_zpls_s_spectral",
+      "sim_function": "zp_local_scaling",
+      "diff_function": "standard",
+      "clustering_method": "spectral",
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "normalize_diff_mat_by_abs_max": true,
+      "gamma": 0.1,
+      "beta": 5,
+      "sigma": 7,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "rdc",
+      "method_name": "rdc_mnd_lb_spectral",
+      "sim_function": "max_normalized_distance",
+      "diff_function": "locally_biased",
+      "clustering_method": "spectral",
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "gamma": 0.1,
+      "beta": 5,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "rdc",
+      "method_name": "rdc_mnd_s_spectral",
+      "sim_function": "max_normalized_distance",
+      "diff_function": "standard",
+      "clustering_method": "spectral",
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "normalize_diff_mat_by_abs_max": true,
+      "gamma": 0.1,
+      "beta": 5,
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "nmf",
+      "nmf_type": "nmf",
+      "n_components": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "pca",
+      "n_components": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "kmeans",
+      "n_clusters": 3,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "cl_summ_pad": 25
+      }
+    },
+    {
+      "method": "sae",
+      "d_sae": 3,
+      "n_epochs": 500,
+      "lr": 0.001,
+      "n_lr_warmup": 10,
+      "sparsity_coeff": 0.0004,
+      "n_sparsity_warmup": 0,
+      "sae_batch_size": 2000,
+      "n_workers": 4,
+      "device": "cuda",
+      "seed": 42,
+      "normalize_w_dec": true,
+      "remove_parallel_grads": true,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "cl_summ_bg_color": [
+          0,
+          0,
+          0
+        ],
+        "cl_summ_pad": 25,
+        "visualize_coeffs": true
+      }
+    },
+    {
+      "method": "classification",
+      "classifier": "logistic_regression",
+      "folds": 5
+    },
+    {
+      "method": "cka",
+      "verbose": true
+    }
+  ]
+}
