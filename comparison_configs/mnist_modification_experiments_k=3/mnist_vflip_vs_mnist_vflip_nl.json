@@ -32,8 +32,8 @@
   "only_last_layer": true,
   "methods": [
     {
-      "method": "rdc",
-      "method_name": "rdc_nb_lb_spectral",
+      "method": "rdx",
+      "method_name": "rdx_nb_lb_spectral",
       "sim_function": "neighborhood",
       "diff_function": "locally_biased",
       "clustering_method": "spectral",
@@ -54,8 +54,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_nb_s_spectral",
+      "method": "rdx",
+      "method_name": "rdx_nb_s_spectral",
       "sim_function": "neighborhood",
       "diff_function": "standard",
       "clustering_method": "spectral",
@@ -77,8 +77,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_nb_lb_pagerank",
+      "method": "rdx",
+      "method_name": "rdx_nb_lb_pagerank",
       "sim_function": "neighborhood",
       "diff_function": "locally_biased",
       "clustering_method": "pagerank",
@@ -101,8 +101,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_nb_s_pagerank",
+      "method": "rdx",
+      "method_name": "rdx_nb_s_pagerank",
       "sim_function": "neighborhood",
       "diff_function": "standard",
       "clustering_method": "pagerank",
@@ -125,8 +125,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_zpls_lb_spectral",
+      "method": "rdx",
+      "method_name": "rdx_zpls_lb_spectral",
       "sim_function": "zp_local_scaling",
       "diff_function": "locally_biased",
       "clustering_method": "spectral",
@@ -149,8 +149,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_zpls_s_spectral",
+      "method": "rdx",
+      "method_name": "rdx_zpls_s_spectral",
       "sim_function": "zp_local_scaling",
       "diff_function": "standard",
       "clustering_method": "spectral",
@@ -173,8 +173,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_mnd_lb_spectral",
+      "method": "rdx",
+      "method_name": "rdx_mnd_lb_spectral",
       "sim_function": "max_normalized_distance",
       "diff_function": "locally_biased",
       "clustering_method": "spectral",
@@ -195,8 +195,8 @@
       }
     },
     {
-      "method": "rdc",
-      "method_name": "rdc_mnd_s_spectral",
+      "method": "rdx",
+      "method_name": "rdx_mnd_s_spectral",
       "sim_function": "max_normalized_distance",
       "diff_function": "standard",
       "clustering_method": "spectral",
