@@ -241,26 +241,26 @@ def run_clf(input_dict):
     return output_dict
 
 
-def run_rdc(input_dict, load_outputs=False):
+def run_rdx(input_dict, load_outputs=False):
     output_dir = input_dict['output_dir']
     sim_function = input_dict['sim_function']
-    method_name = input_dict.get('method_name', f'rdc_{sim_function}')
+    method_name = input_dict.get('method_name', f'rdx_{sim_function}')
     method_dir = os.path.join(output_dir, method_name)
     os.makedirs(method_dir, exist_ok=True)
 
-    rdc = RDX()
+    rdx = RDX()
     if load_outputs:
         with open(os.path.join(method_dir, 'outputs.pkl'), 'rb') as f:
             output_dict = pkl.load(f)
     else:
-        output_dict = rdc.fit(input_dict)
+        output_dict = rdx.fit(input_dict)
         output_dict['method_dir'] = method_dir
         output_dict['inputs'] = input_dict['method_dict']
         with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
             pkl.dump(output_dict, f)
 
     if input_dict.get('viz_params', None) is not None:
-        fig_paths = rdc.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
+        fig_paths = rdx.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
         with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
             pkl.dump(fig_paths, f)
 
@@ -789,10 +789,10 @@ def main():
                         input_dict['r0m_red'] = r0m_red
                         input_dict['r1m_red'] = r1m_red
 
-                    # if method_name != 'rdc_nb_lb_eigc' and method_name != 'rdc_nb_lb_pagerank':
+                    # if method_name != 'rdx_nb_lb_eigc' and method_name != 'rdx_nb_lb_pagerank':
                     #     continue
 
-                    # if method_name != 'rdc_zpls_lb_spectral':
+                    # if method_name != 'rdx_zpls_lb_spectral':
                     #     continue
 
                     # if method != 'kmeans' and method != 'nmf' and method != 'pca' and method != 'cnmf':
@@ -808,11 +808,11 @@ def main():
                     elif method == 'classification':
                         # continue
                         run_clf(input_dict)
-                    elif method == 'rdc':
+                    elif method == 'rdx':
                         # continue
                         # if input_dict['sim_function'] != 'zp_local_scaling':
                         #     continue
-                        run_rdc(input_dict, load_outputs=load_outputs)
+                        run_rdx(input_dict, load_outputs=load_outputs)
                     elif method == 'kmeans':
                         # continue
                         run_kmeans(input_dict, load_outputs=load_outputs)
