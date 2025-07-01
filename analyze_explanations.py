@@ -605,6 +605,9 @@ def pca_sample_plot(params):
     nmf_type = params['nmf_type']
     kmeans_type = 'kmeans'
     sae_type = 'sae'
+    output_root_folder = params.get('output_root_folder', None)
+    output_root_folder += f'/pca_sample_plots/'
+    os.makedirs(output_root_folder, exist_ok=True)
 
     m0_rep = processed_files['m0_reps'][fi]
     m0_map = processed_files['m0_mappings'][fi]
@@ -739,8 +742,8 @@ def pca_sample_plot(params):
         if VERBOSE_LABELS:
             ax.set_title(topk_d["title"], fontsize=fontsize)
 
-        ax.set_xlim([min(m0_2d[:, 0].min(), m1_2d[:, 0].min()) - 0.1, max(m0_2d[:, 0].max(), m1_2d[:, 0].max()) + 1])
-        ax.set_ylim([min(m0_2d[:, 1].min(), m1_2d[:, 1].min()) - 0.1, max(m0_2d[:, 1].max(), m1_2d[:, 1].max()) + 1])
+        # ax.set_xlim([min(m0_2d[:, 0].min(), m1_2d[:, 0].min()) - 0.1, max(m0_2d[:, 0].max(), m1_2d[:, 0].max()) + 1])
+        # ax.set_ylim([min(m0_2d[:, 1].min(), m1_2d[:, 1].min()) - 0.1, max(m0_2d[:, 1].max(), m1_2d[:, 1].max()) + 1])
         ax.set_xticks([])
         ax.set_yticks([])
 
@@ -749,16 +752,32 @@ def pca_sample_plot(params):
         #     lh.set_alpha(1)
 
     if VERBOSE_LABELS:
-        axes[0, 0].set_ylabel("Top-10 Samples per Concept", fontsize=16)
-        axes[0, 0].set_ylabel("Repr. A", fontsize=fontsize)
-        axes[1, 0].set_ylabel("Repr. B", fontsize=fontsize)
-        plt.tight_layout()
-        plt.savefig(f'{params["output_root_folder"]}/pca_samples_plot.{EXT}')
+        # axes[0, 0].set_ylabel("Top-10 Samples per Concept", fontsize=16)
+        # axes[0, 0].set_ylabel("Repr. A", fontsize=fontsize)
+        # axes[1, 0].set_ylabel("Repr. B", fontsize=fontsize)
+        if direction == '10' and m0_map is not None:
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+            plt.suptitle('Explanations on PCA (B aligned to A)', fontsize=fontsize)
+            plt.savefig(f'{output_root_folder}/{folders[fi]}_BtoA.{EXT}')
+        elif direction == '01' and m1_map is not None:
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+            plt.suptitle('Explanations on PCA (A aligned to B)', fontsize=fontsize)
+            plt.savefig(f'{output_root_folder}/{folders[fi]}_AtoB.{EXT}')
+        else:
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+            plt.suptitle('Explanations on PCA', fontsize=fontsize)
+            plt.savefig(f'{output_root_folder}/{folders[fi]}.{EXT}')
+
     else:
         for i, fig in enumerate(figs):
             title = topks[i]['title'].replace(' ', '_').replace('.', '').lower()
             fig.tight_layout()
-            fig.savefig(f'{params["output_root_folder"]}/pca_samples_plot_{title}.{EXT}')
+            if direction == '10' and m0_map is not None:
+                fig.savefig(f'{output_root_folder}/{folders[fi]}_BtoA_{title}.{EXT}')
+            elif direction == '01' and m1_map is not None:
+                fig.savefig(f'{output_root_folder}/{folders[fi]}_AtoB_{title}.{EXT}')
+            else:
+                fig.savefig(f'{output_root_folder}/{folders[fi]}_{title}.{EXT}')
 
     if SHOW:
         plt.show()
@@ -802,6 +821,8 @@ def intermediate_steps_plots(params, part1=True, part2=True):
     folders = params['folders']
     file_index = params['file_index']
     output_root_folder = params['output_root_folder']
+    output_root_folder += f'/intermediate_steps_plots/'
+    os.makedirs(output_root_folder, exist_ok=True)
 
     # subset_inds = np.sort(np.random.choice(np.arange(0, 1500), 50, replace=False))
     r0_dm = processed_files['data'][folders[file_index]][
@@ -856,7 +877,7 @@ def intermediate_steps_plots(params, part1=True, part2=True):
             axes.set_xlabel("Samples")
             axes.set_ylabel("Samples")
         plt.tight_layout()
-        plt.savefig(f'{output_root_folder}/{folders[file_index]}_diff_01.{EXT}', dpi=300)
+        plt.savefig(f'{output_root_folder}/{folders[file_index]}_diff_AtoB.{EXT}', dpi=300)
         fig, axes = plt.subplots(1, 1)
         im = axes.imshow(diff_10, aspect='auto', interpolation='nearest', cmap='bwr')
         axes.tick_params(axis='both', which='major', labelsize=18)
@@ -866,7 +887,7 @@ def intermediate_steps_plots(params, part1=True, part2=True):
             axes.set_xlabel("Samples")
             axes.set_ylabel("Samples")
         plt.tight_layout()
-        plt.savefig(f'{output_root_folder}/{folders[file_index]}_diff_10.{EXT}', dpi=300)
+        plt.savefig(f'{output_root_folder}/{folders[file_index]}_diff_BtoA.{EXT}', dpi=300)
         if SHOW:
             plt.show()
 
@@ -1138,7 +1159,7 @@ def analyze_unaligned_real_model_experiments():
                                                                "file_indices": list(range(7)),
                                                                "nmf_type": "cnmf",
                                                                },
-                                           "plot_intermediates": True,
+                                           "plot_intermediates": False,
                                            "plot_bsr": True,
                                            "summarize_clusters": True,
                                            })
@@ -1177,6 +1198,41 @@ def analyze_aligned_real_model_experiments():
                                                                "file_indices": list(range(7)),
                                                                "nmf_type": "cnmf",
                                                                },
+                                           "plot_intermediates": False,
+                                           "plot_bsr": True,
+                                           "summarize_clusters": True,
+                                           })
+
+def analyze_clip_inat_ar():
+    exp_names = [
+        "clip_vs_clipinat_inat_ar"
+    ]
+    files = {
+        'cka': ['outputs.pkl'],
+        'clf': ['outputs.pkl'],
+        'rdx_nb_lb_spectral': ['outputs.pkl', 'fig_paths.pkl'],
+        # 'rdx_zpls_lb_spectral': ['outputs.pkl', 'fig_paths.pkl'],
+        # 'rdx_mnd_lb_spectral': ['outputs.pkl', 'fig_paths.pkl'],
+        # 'rdx_nb_s_spectral': ['outputs.pkl', 'fig_paths.pkl'],
+        # 'rdx_zpls_s_spectral': ['outputs.pkl', 'fig_paths.pkl'],
+        # 'rdx_mnd_s_spectral': ['outputs.pkl', 'fig_paths.pkl'],
+        'kmeans_ar0to1': ['outputs.pkl', 'fig_paths.pkl'],
+        'kmeans_ar1to0': ['outputs.pkl', 'fig_paths.pkl'],
+        'sae_ar0to1': ['outputs.pkl', 'fig_paths.pkl'],
+        'sae_ar1to0': ['outputs.pkl', 'fig_paths.pkl'],
+        'cnmf_ar0to1': ['outputs.pkl', 'fig_paths.pkl'],
+        'cnmf_ar1to0': ['outputs.pkl', 'fig_paths.pkl'],
+    }
+    datasets = [
+        # "cub_pcbm",
+        'inatdl_subset_grouped'
+    ]
+    # for exp_name in exp_names:
+    main(exp_names, datasets, main_params={"files": files, 'out_folder_name': 'real',
+                                           "pca_plot_params": {"directions": ["01", "10"],
+                                                               "file_indices": list(range(3)),
+                                                               "nmf_type": "cnmf",
+                                                               },
                                            "plot_intermediates": True,
                                            "plot_bsr": True,
                                            "summarize_clusters": True,
@@ -1200,9 +1256,14 @@ if __name__ == "__main__":
     ROOT_OUTPUT_FOLDER = "./outputs"
     ROOT_CONFIG_FOLDER = "./comparison_configs"
     SHOW = True
+
+    # minimal example
+    analyze_clip_inat_ar()
+
+
     # analyze_mnist_835()
     # analyze_mnist_modification_experiments()
     # analyze_cub_pcbm_experiments()
     # analyze_unaligned_real_model_experiments()
-    analyze_aligned_real_model_experiments()
+    # analyze_aligned_real_model_experiments()
     exit()
