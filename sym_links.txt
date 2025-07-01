@@ -1,0 +1,7 @@
+ln -s {external_location}/imagenet ./data/imagenet
+
+ln -s {external_location}/CUB_200_2011 ./data/CUB_200_2011
+
+ln -s {external_location}/MNIST ./data/mnist_data/MNIST
+                OR (depends on your setup)
+ln -s {external_location}/mnist_data/MNIST ./data/mnist_data/MNIST
