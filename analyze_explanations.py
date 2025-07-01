@@ -603,6 +603,8 @@ def pca_sample_plot(params):
     fi = params['file_index']
     selected_indices_dict = processed_files['selected_indices']
     nmf_type = params['nmf_type']
+    kmeans_type = 'kmeans'
+    sae_type = 'sae'
 
     m0_rep = processed_files['m0_reps'][fi]
     m0_map = processed_files['m0_mappings'][fi]
@@ -617,10 +619,16 @@ def pca_sample_plot(params):
             m0_rep = m0_map['mapping_layer'](m0_rep)
             preds.append(processed_files['data'][folders[fi]][('clf', 'outputs.pkl')]['preds'][:, 1])
             preds.append(processed_files['data'][folders[fi]][('clf', 'outputs.pkl')]['preds'][:, 2])
+            nmf_type += '_ar1to0'
+            kmeans_type += '_ar1to0'
+            sae_type += '_ar1to0'
         elif direction == '01' and m1_map is not None:
             m1_rep = m1_map['mapping_layer'](m1_rep)
             preds.append(processed_files['data'][folders[fi]][('clf', 'outputs.pkl')]['preds'][:, 0])
             preds.append(processed_files['data'][folders[fi]][('clf', 'outputs.pkl')]['preds'][:, 3])
+            nmf_type += '_ar0to1'
+            kmeans_type += '_ar0to1'
+            sae_type += '_ar0to1'
         if direction == '10' and m0_map is None:
             preds.append(processed_files['data'][folders[fi]][('clf', 'outputs.pkl')]['preds'][:, 1])
             preds.append(processed_files['data'][folders[fi]][('clf', 'outputs.pkl')]['preds'][:, 0])
@@ -645,13 +653,13 @@ def pca_sample_plot(params):
          "cmap": plt.get_cmap('Set1'), 'label': "NMF(A)", "markers": ['s', 'v', 'D', 'H', 'd']},
         {"topk": selected_indices_dict[nmf_type]['1'][fi], "repr": m1_2d, "title": f"NMF(B) on Repr. B",
          "cmap": mod_cmap, 'label': "NMF(B)", "markers": ['^', 'P', 'X', '*', '+']},
-        {"topk": selected_indices_dict['kmeans']['0'][fi], "repr": m0_2d, "title": f"KMeans(A) on Repr. A",
+        {"topk": selected_indices_dict[kmeans_type]['0'][fi], "repr": m0_2d, "title": f"KMeans(A) on Repr. A",
          "cmap": plt.get_cmap('Set1'), 'label': "KM(A)", "markers": ['s', 'v', 'D', 'H', 'd']},
-        {"topk": selected_indices_dict['kmeans']['1'][fi], "repr": m1_2d, "title": f"KMeans(B) on Repr. B",
+        {"topk": selected_indices_dict[kmeans_type]['1'][fi], "repr": m1_2d, "title": f"KMeans(B) on Repr. B",
          "cmap": mod_cmap, 'label': "KM(B)", "markers": ['^', 'P', 'X', '*', '+']},
-        {"topk": selected_indices_dict['sae']['0'][fi], "repr": m0_2d, "title": f"SAE(A) on Repr. A",
+        {"topk": selected_indices_dict[sae_type]['0'][fi], "repr": m0_2d, "title": f"SAE(A) on Repr. A",
          "cmap": plt.get_cmap('Set1'), 'label': "SAE(A)", "markers": ['s', 'v', 'D', 'H', 'd']},
-        {"topk": selected_indices_dict['sae']['1'][fi], "repr": m1_2d, "title": f"SAE(B) on Repr. B",
+        {"topk": selected_indices_dict[sae_type]['1'][fi], "repr": m1_2d, "title": f"SAE(B) on Repr. B",
          "cmap": mod_cmap, 'label': "SAE(B)", "markers": ['^', 'P', 'X', '*', '+']},
         {"topk": selected_indices_dict['rdx_nb_lb_spectral']["01"][fi][1:], "repr": m0_2d,
          "title": f"RDX(A, B) on Repr. A",
@@ -712,7 +720,7 @@ def pca_sample_plot(params):
                        label=label)
 
         for i in range(num_c):
-            lab_i = np.unique(dataset_labels)[i]
+            # lab_i = np.unique(dataset_labels)[i]
             sel_inds = topk_indices[i]
 
             # ax.scatter(x[not_sel_inds, 0], x[not_sel_inds, 1], color=cmap(i), alpha=0.1)
@@ -1127,7 +1135,8 @@ def analyze_unaligned_real_model_experiments():
     # for exp_name in exp_names:
     main(exp_names, datasets, main_params={"files": files, 'out_folder_name': 'real',
                                            "pca_plot_params": {"directions": ["01", "10"],
-                                                               "file_indices": list(range(7))
+                                                               "file_indices": list(range(7)),
+                                                               "nmf_type": "cnmf",
                                                                },
                                            "plot_intermediates": True,
                                            "plot_bsr": True,
@@ -1165,7 +1174,8 @@ def analyze_aligned_real_model_experiments():
 
     main(exp_names, datasets, main_params={"files": files,
                                            "pca_plot_params": {"directions": ["01", "10"],
-                                                               "file_indices": list(range(7))
+                                                               "file_indices": list(range(7)),
+                                                               "nmf_type": "cnmf",
                                                                },
                                            "plot_intermediates": True,
                                            "plot_bsr": True,
@@ -1191,10 +1201,8 @@ if __name__ == "__main__":
     ROOT_CONFIG_FOLDER = "./comparison_configs"
     SHOW = True
     # analyze_mnist_835()
-    analyze_mnist_modification_experiments()
+    # analyze_mnist_modification_experiments()
     # analyze_cub_pcbm_experiments()
-
-    # @TODO: Test these
     # analyze_unaligned_real_model_experiments()
-    # analyze_aligned_real_model_experiments()
+    analyze_aligned_real_model_experiments()
     exit()
