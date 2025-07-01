@@ -1,0 +1,5 @@
+#!/bin/bash
+python generate_comparison_explanations.py --comparison_config "/home/nkondapa/PycharmProjects/RDX/comparison_configs/dino_vs_dinov2_imagenet/dino_vs_dinov2_imagenet_mittens.json" --comparison_output_root outputs/dino_vs_dinov2_imagenet --save_m0_representation  --save_m1_representation 
+python generate_comparison_explanations.py --comparison_config "/home/nkondapa/PycharmProjects/RDX/comparison_configs/dino_vs_dinov2_imagenet/dino_vs_dinov2_imagenet_trolleybus.json" --comparison_output_root outputs/dino_vs_dinov2_imagenet --save_m0_representation  --save_m1_representation 
+python generate_comparison_explanations.py --comparison_config "/home/nkondapa/PycharmProjects/RDX/comparison_configs/dino_vs_dinov2_imagenet/dino_vs_dinov2_imagenet_whippet.json" --comparison_output_root outputs/dino_vs_dinov2_imagenet --save_m0_representation  --save_m1_representation 
+python generate_comparison_explanations.py --comparison_config "/home/nkondapa/PycharmProjects/RDX/comparison_configs/dino_vs_dinov2_imagenet/dino_vs_dinov2_imagenet_gibbons.json" --comparison_output_root outputs/dino_vs_dinov2_imagenet --save_m0_representation  --save_m1_representation 

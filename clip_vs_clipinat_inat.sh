@@ -1,0 +1,4 @@
+#!/bin/bash
+python generate_comparison_explanations.py --comparison_config "/home/nkondapa/PycharmProjects/RDX/comparison_configs/clip_vs_clipinat_inat/clip_vs_clipinat_inat_gator.json" --comparison_output_root outputs/clip_vs_clipinat_inat --save_m0_representation  --save_m1_representation 
+python generate_comparison_explanations.py --comparison_config "/home/nkondapa/PycharmProjects/RDX/comparison_configs/clip_vs_clipinat_inat/clip_vs_clipinat_inat_corvid.json" --comparison_output_root outputs/clip_vs_clipinat_inat --save_m0_representation  --save_m1_representation 
+python generate_comparison_explanations.py --comparison_config "/home/nkondapa/PycharmProjects/RDX/comparison_configs/clip_vs_clipinat_inat/clip_vs_clipinat_inat_maple.json" --comparison_output_root outputs/clip_vs_clipinat_inat --save_m0_representation  --save_m1_representation 
