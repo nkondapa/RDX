@@ -9,14 +9,12 @@ conda activate RDX
 bash setup.sh
 
 ```
-
+https://data.caltech.edu/records/chw9h-4bs90/files/checkpoints.zip?download=1
 ### Downloading Datasets
-1) ImageNet: You can download imagenet with ```bash download_imagenet.sh```.
-2) CUB: You can download CUB with ```bash download_cub.sh```.
+1) MNIST: You can download the MNIST dataset with ```bash download_mnist.sh```.
+2) INaturalist (Subset): You can download the iNaturalist subset with ```bash download_inaturalist.sh```.
+3) CUB: You can download CUB and supplementary files for CUB CBMs with ```bash download_cub.sh```.
+4) ImageNet: You can download imagenet with ```bash download_imagenet.sh```.
+
 ## Usage
 
-
-## TODO
-- [ ] Add qualitative visualization code to resnet comparisons
-- [ ] Add layerwise comparison visualizations
-- [ ] Add remaining comparison experiments

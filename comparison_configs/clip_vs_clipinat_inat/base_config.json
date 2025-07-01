@@ -3,7 +3,7 @@
   "move_to_cpu_in_hook": true,
   "image_selection": {
     "dataset_name": "inatdl",
-    "dataset_root": "/home/nkondapa/PycharmProjects/inat_downloader/results/",
+    "dataset_root": "./data/inat_subset/",
     "dataset_split": "train",
     "transform_type": "test",
     "patchify": false,

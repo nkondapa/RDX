@@ -3,7 +3,7 @@
   "move_to_cpu_in_hook": false,
   "image_selection": {
     "dataset_name": "mnist",
-    "dataset_root": "/home/nkondapa/Datasets/mnist_data/MNIST/",
+    "dataset_root": "./data/mnist_data/MNIST/",
     "dataset_split": "train",
     "transform_type": "test",
     "patchify": false,
