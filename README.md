@@ -1,5 +1,7 @@
 # Representational Difference Explanations (RDX)
+[![Project Page](https://img.shields.io/badge/Project%20Page-Link)](https://nkondapa.github.io/rdx-page/)
 [![Paper](https://img.shields.io/badge/arXiv-PDF-b31b1b)]([https://arxiv.org/pdf/2505.23917](https://arxiv.org/pdf/2505.23917))
+
 
 ### Setup
 ```sh
