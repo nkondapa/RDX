@@ -9,7 +9,7 @@ Pillow
 pytest==8.3.3
 pytorch_lightning==2.3.0
 scikit_learn
-scipy==1.7.3
+scipy
 tensorflow
 termcolor==2.5.0
 threadpoolctl==3.5.0

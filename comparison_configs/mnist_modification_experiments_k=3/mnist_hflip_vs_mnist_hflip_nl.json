@@ -3,7 +3,7 @@
   "move_to_cpu_in_hook": false,
   "image_selection": {
     "dataset_name": "mnist_hflip_nl",
-    "dataset_root": "/home/nkondapa/Datasets/mnist_data/MNIST/",
+    "dataset_root": "./data/mnist_data/MNIST/",
     "dataset_split": "train",
     "transform_type": "test",
     "patchify": false,
@@ -263,6 +263,45 @@
       "n_workers": 4,
       "device": "cuda",
       "seed": 42,
+      "normalize_w_dec": true,
+      "remove_parallel_grads": true,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "cl_summ_bg_color": [
+          0,
+          0,
+          0
+        ],
+        "cl_summ_pad": 25,
+        "visualize_coeffs": true
+      }
+    },
+    {
+      "method": "usae",
+      "nb_components": null,
+      "n_epochs": 10,
+      "lr": 0.0003,
+      "final_lr": 1e-06,
+      "n_lr_warmup": 10,
+      "sparsity_coeff": 0.0004,
+      "n_sparsity_warmup": 0,
+      "sae_batch_size": 2000,
+      "loss_criterion": "L1",
+      "n_workers": 4,
+      "device": "cuda",
+      "seed": 42,
+      "debug": 1,
+      "divide_norm": false,
+      "sae_params": {
+        "encoder_module": "mlp_bn_1",
+        "dictionary_initializer": null,
+        "data_initializer": null,
+        "dictionary_normalization": "l2",
+        "top_k": 32
+      },
       "normalize_w_dec": true,
       "remove_parallel_grads": true,
       "viz_params": {

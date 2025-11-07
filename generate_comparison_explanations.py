@@ -1,4 +1,3 @@
-
 import numpy as np
 import tqdm
 import torch
@@ -25,6 +24,7 @@ from sklearn.cluster import KMeans
 from sklearn.linear_model import LogisticRegression
 from src.utils.model_loader import split_model
 from matplotlib import rc, colors
+
 rc('text.latex', preamble=r'\usepackage{color}')
 import pytorch_lightning as pl
 from src import cka
@@ -34,6 +34,8 @@ from src import kmeans_visualization_helper as kmviz
 from pymf.pymf.snmf import SNMF
 from pymf.pymf.cnmf import CNMF
 from src.saev import SparseAutoencoder
+from src.usae.uni_demo import prepare_and_train_universal_sae
+from src.usae.overcomplete.sae import TopKSAE
 
 
 def _batch_inference(model, dataset, batch_size=128, resize=None, device='cuda', no_grad=True):
@@ -82,9 +84,9 @@ def shared_concept_proposals_inference(params):
             pl.seed_everything(0)
             if transform is not None:
                 out = suf.load_images(image_path_list=image_list,
-                                                          data_root=dataset_root,
-                                                          transform=transform,
-                                                          raw_data=raw_data)
+                                      data_root=dataset_root,
+                                      transform=transform,
+                                      raw_data=raw_data)
                 images_preprocessed = out['images_preprocessed']
                 images_preprocessed_list.append(images_preprocessed.cpu())
                 st = time.time()
@@ -124,8 +126,8 @@ def shared_concept_proposals_inference(params):
         for mi in range(len(fe_outs)):
             transform = transforms[mi]
             out = suf.load_images(image_path_list=image_list,
-                                                      data_root=dataset_root,
-                                                      transform=transform)
+                                  data_root=dataset_root,
+                                  transform=transform)
             image_size = out['image_size']
             patches = ceh.patchify_images(out['images_preprocessed'], patch_size, strides=None)
             subsample = 8
@@ -171,7 +173,7 @@ def run_cka(input_dict):
     os.makedirs(method_dir, exist_ok=True)
     representations = input_dict['representations']
     cka_val = cka.CudaCKA(device='cuda', debiased=True).linear_CKA(torch.FloatTensor(representations[0]),
-                                                                       torch.FloatTensor(representations[1]))
+                                                                   torch.FloatTensor(representations[1]))
     if input_dict.get('verbose'):
         print('CKA:', cka_val)
 
@@ -211,16 +213,23 @@ def run_clf(input_dict):
     for i, (train_index, test_index) in enumerate(kf.split(indices)):
         for ii in range(len(clfs)):
             repr_key = repr_keys[ii]
-            clf = LogisticRegression(random_state=seed).fit(representations[ii][train_index], dataset_labels[train_index])
+            clf = LogisticRegression(random_state=seed).fit(representations[ii][train_index],
+                                                            dataset_labels[train_index])
             acc = clf.score(representations[ii][test_index], dataset_labels[test_index])
             clfs[repr_key].append(clf)
             preds[test_index, ii] = clf.predict(representations[ii][test_index])
             accs[repr_key].append(acc)
 
-        agreement["01"].append(np.mean(np.argmax(clfs['0'][i].predict_proba(representations[0][test_index]), axis=1) == np.argmax(clfs['1'][i].predict_proba(representations[1][test_index]), axis=1)))
+        agreement["01"].append(np.mean(
+            np.argmax(clfs['0'][i].predict_proba(representations[0][test_index]), axis=1) == np.argmax(
+                clfs['1'][i].predict_proba(representations[1][test_index]), axis=1)))
         if align_reps:
-            agreement["0m1"].append(np.mean(np.argmax(clfs['0m'][i].predict_proba(representations[0][test_index]), axis=1) == np.argmax(clfs['1'][i].predict_proba(representations[1][test_index]), axis=1)))
-            agreement["01m"].append(np.mean(np.argmax(clfs['0'][i].predict_proba(representations[0][test_index]), axis=1) == np.argmax(clfs['1m'][i].predict_proba(representations[1][test_index]), axis=1)))
+            agreement["0m1"].append(np.mean(
+                np.argmax(clfs['0m'][i].predict_proba(representations[0][test_index]), axis=1) == np.argmax(
+                    clfs['1'][i].predict_proba(representations[1][test_index]), axis=1)))
+            agreement["01m"].append(np.mean(
+                np.argmax(clfs['0'][i].predict_proba(representations[0][test_index]), axis=1) == np.argmax(
+                    clfs['1m'][i].predict_proba(representations[1][test_index]), axis=1)))
 
         # print(f'CLF: ', np.mean(np.array(accs["0"])), np.mean(np.array(accs["1"])))
 
@@ -234,7 +243,8 @@ def run_clf(input_dict):
     with open(os.path.join(method_dir, 'outputs.txt'), 'w') as f:
         f.write(s_all)
 
-    output_dict = {'accs': accs, 'agreement': agreement, 'method_dir': method_dir, 'preds': preds, 'labels': dataset_labels}
+    output_dict = {'accs': accs, 'agreement': agreement, 'method_dir': method_dir, 'preds': preds,
+                   'labels': dataset_labels}
     with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
         pkl.dump(output_dict, f)
 
@@ -342,7 +352,7 @@ def run_nmf(input_dict, load_outputs=False):
                 nmf.fit(repr_)
                 U = nmf.transform(repr_)
                 recon_err = np.linalg.norm(repr_ - nmf.inverse_transform(U))
-                V =  nmf.components_
+                V = nmf.components_
             elif nmf_type == 'snmf':
                 nmf = SNMF(repr_.numpy().T, num_bases=num_comp, niter=100, verbose=True)
                 nmf.factorize()
@@ -488,8 +498,103 @@ def run_sae(input_dict, load_outputs=False):
 
     return output_dict
 
-def learn_mapping(repr_from, repr_to, params):
 
+def run_usae(input_dict, load_outputs=False):
+    from src.usae.overcomplete.sae.losses import (
+        top_k_auxiliary_loss,
+        top_k_auxiliary_loss_L1,
+    )
+    from src.usae.universal_sae.data import ActivationDataset
+    output_dir = input_dict['output_dir']
+    method_name = input_dict.get('method_name', f'usae')
+    method_dir = os.path.join(output_dir, method_name)
+    os.makedirs(method_dir, exist_ok=True)
+
+    output_dict = {}
+    representations = input_dict['representations']
+    seed = input_dict['seed']
+    if input_dict['nb_components'] is None:
+        input_dict['nb_components'] = representations[0].shape[1] * 8
+
+    if input_dict.get('align_representations', None) is not None:
+        align_dir = input_dict['align_representations']
+        if align_dir == '0to1':
+            representations[0] = input_dict['repr0_mapped']
+            input_dict['red0'] = input_dict['r0m_red']
+        elif align_dir == '1to0':
+            representations[1] = input_dict['repr1_mapped']
+            input_dict['red1'] = input_dict['r1m_red']
+
+    if not load_outputs:
+        names = ['repr_0', 'repr_1']
+        model_zoo = {
+            'repr_0':
+                {
+                    "input_shape": representations[0].shape[1],
+                    "model_mean": representations[0].mean(),
+                    "model_std": representations[0].std(),
+                    "checkpoint_path": "repr1_checkpoint_path_tmp",
+                },
+            'repr_1':
+                {
+                    "input_shape": representations[1].shape[1],
+                    "model_mean": representations[0].mean(),
+                    "model_std": representations[0].std(),
+                    "checkpoint_path": "repr1_checkpoint_path_tmp",
+                }
+        }
+        dataset = ActivationDataset(representations[0], representations[1])
+        sae_params = input_dict['sae_params']
+        input_dict['n_components'] = sae_params['top_k']
+        if input_dict["loss_criterion"] == "L2":
+            criterion = top_k_auxiliary_loss
+        else:
+            criterion = top_k_auxiliary_loss_L1
+        model_zoo, logs = prepare_and_train_universal_sae(
+            dataset=dataset,
+            sae_class=TopKSAE,
+            criterion=criterion,
+            model_zoo=model_zoo,
+            sae_params=sae_params,
+            lr=input_dict["lr"],
+            final_lr=input_dict["final_lr"],
+            nb_components=input_dict["nb_components"],
+            batch_size=input_dict["sae_batch_size"],
+            nb_epochs=input_dict["n_epochs"],
+            debug=input_dict["debug"],
+            model_name="tmp_to_delete",
+            divide_norm=input_dict["divide_norm"],
+        )
+        with torch.no_grad():
+            for ri, model_name in enumerate(model_zoo):
+                sae = model_zoo[model_name]['sae']
+                repr_ = torch.tensor(representations[0] if model_name == 'repr_0' else representations[1])
+                pre_codes, z_topk = sae.encode(repr_.to('cuda'))
+                top_concept_inds = z_topk.detach().mean(0).topk(sae_params['top_k']).indices
+                output_dict[names[ri]] = {
+                    'global_step': len(logs['avg_loss']), 'loss_history': logs['avg_loss'],
+                                          'U': z_topk.detach()[:, top_concept_inds].cpu().numpy(),
+                                          'V': sae.get_dictionary().detach().cpu().numpy(),
+                                          'recon_err': logs['reconstruction_table'][ri][-1]
+                }
+
+        output_dict['method_dir'] = method_dir
+        output_dict['inputs'] = input_dict['method_dict']
+        with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
+            pkl.dump(output_dict, f)
+    else:
+        with open(os.path.join(method_dir, 'outputs.pkl'), 'rb') as f:
+            output_dict = pkl.load(f)
+
+    if input_dict.get('viz_params', None) is not None:
+        fig_paths = mfviz.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
+        with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
+            pkl.dump(fig_paths, f)
+
+    return output_dict
+
+
+def learn_mapping(repr_from, repr_to, params):
     num_steps = params.get('num_steps', 100)
     train_fraction = params.get('train_fraction', 0.7)
     lr = params.get('lr', 0.001)
@@ -523,6 +628,7 @@ def learn_mapping(repr_from, repr_to, params):
     mapping_training_history['mapping_layer'] = mapping_layer
 
     return mapping_layer(repr_from).detach().cpu(), mapping_training_history
+
 
 def main():
     parser = representation_comparison_parser()
@@ -573,16 +679,16 @@ def main():
     else:
         igs_params = {
             'data_group_params':
-            {
-                'dataset_name': dataset_name,
-                'dataset_root': dataset_root,
-                'split': dataset_split,
-                'seed': seed,
-                'num_images': image_selection_params['num_images'],
-                'topk_group_size': image_selection_params.get('topk_group_size', None),
-                'topk_prob_thresh': image_selection_params.get('topk_prob_thresh', 0),
-                'target_classes': target_classes,
-            },
+                {
+                    'dataset_name': dataset_name,
+                    'dataset_root': dataset_root,
+                    'split': dataset_split,
+                    'seed': seed,
+                    'num_images': image_selection_params['num_images'],
+                    'topk_group_size': image_selection_params.get('topk_group_size', None),
+                    'topk_prob_thresh': image_selection_params.get('topk_prob_thresh', 0),
+                    'target_classes': target_classes,
+                },
             # for selection strategies that rely on model outputs
             'param_dicts1': {'model': (repr_0['model'], repr_0.get('model_ckpt', None))},
             'param_dicts2': {'model': (repr_1['model'], repr_1.get('model_ckpt', None))},
@@ -662,7 +768,8 @@ def main():
             elif param_dicts['triplet_embedding_method'] == 'CKL':
                 max_iter = 2000 if param_dicts.get('max_iter', None) is None else param_dicts['max_iter']
                 max_iter = 100 if args.debug else max_iter
-                estimator = cblearn.embedding.CKL(n_components=param_dicts['num_dimensions'], verbose=True, max_iter=max_iter, )
+                estimator = cblearn.embedding.CKL(n_components=param_dicts['num_dimensions'], verbose=True,
+                                                  max_iter=max_iter, )
                 repr = estimator.fit_transform(triplet_indices)
                 print(f'Estimator Stress: {estimator.stress_}')
                 repr = torch.FloatTensor(repr)
@@ -709,7 +816,8 @@ def main():
         params = dict(
             image_list=image_group[image_group_key],
             dataset_name=dataset_name, dataset_root=dataset_root, device=device, patch_size=patch_size, labels=labels,
-            patchify=patchify, fe_outs=fe_outs, transforms=transforms, act_hooks=act_hooks, models=models, raw_data=raw_data,
+            patchify=patchify, fe_outs=fe_outs, transforms=transforms, act_hooks=act_hooks, models=models,
+            raw_data=raw_data,
         )
         images_preprocessed, labels, unnormalize = shared_concept_proposals_inference(params)
         if len(images_preprocessed) == 1:
@@ -718,12 +826,13 @@ def main():
             image_samples = [unnormalize(images_preprocessed[0]), unnormalize(images_preprocessed[1])]
         else:
             dataset = ig_dict['dataset']
-            image_samples = [np.array([os.path.join(dataset.data_root, dataset.paths[i]) for i in range(len(dataset.paths))])] * 2
+            image_samples = [np.array(
+                [os.path.join(dataset.data_root, dataset.paths[i]) for i in range(len(dataset.paths))])] * 2
 
         print('Comparing model concepts')
         # pl.seed_everything(42)
 
-        for lj, m1_layer in enumerate(m1_layers): # reverse order to start from the last layer
+        for lj, m1_layer in enumerate(m1_layers):  # reverse order to start from the last layer
             if m1_layer is not None:
                 activations2 = act_hooks[1].layer_activations[m1_layer]
                 representations[1] = activations2
@@ -803,29 +912,31 @@ def main():
                     load_outputs = False
                     start_time = time.time()
                     if method == 'cka':
-                        # continue
+                        continue
                         run_cka(input_dict)
                     elif method == 'classification':
-                        # continue
+                        continue
                         run_clf(input_dict)
                     elif method == 'rdx':
-                        # continue
+                        continue
                         # if input_dict['sim_function'] != 'zp_local_scaling':
                         #     continue
                         run_rdx(input_dict, load_outputs=load_outputs)
                     elif method == 'kmeans':
-                        # continue
+                        continue
                         run_kmeans(input_dict, load_outputs=load_outputs)
                     elif method == 'nmf':
-                        # continue
+                        continue
                         run_nmf(input_dict, load_outputs=load_outputs)
                     elif method == 'pca':
-                        # continue
+                        continue
                         run_pca(input_dict, load_outputs=load_outputs)
                     elif method == 'sae':
-                        # continue
+                        continue
                         # plt.imsave(f'{output_root_folder}/img800.png', image_samples[1][800][0])
                         run_sae(input_dict, load_outputs=load_outputs)
+                    elif method == 'usae':
+                        run_usae(input_dict, load_outputs=load_outputs)
                     else:
                         raise ValueError(f'Unknown method: {method}')
                     end_time = time.time()
@@ -839,6 +950,6 @@ def main():
 
         ci += 1
 
-if __name__ == '__main__':
 
+if __name__ == '__main__':
     main()
