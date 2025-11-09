@@ -34,8 +34,8 @@ from src import kmeans_visualization_helper as kmviz
 from pymf.pymf.snmf import SNMF
 from pymf.pymf.cnmf import CNMF
 from src.saev import SparseAutoencoder
-from src.usae.uni_demo import prepare_and_train_universal_sae
-from src.usae.overcomplete.sae import TopKSAE
+
+os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'
 
 
 def _batch_inference(model, dataset, batch_size=128, resize=None, device='cuda', no_grad=True):
@@ -499,12 +499,177 @@ def run_sae(input_dict, load_outputs=False):
     return output_dict
 
 
+def run_topk_sae(input_dict, load_outputs=False):
+    output_dir = input_dict['output_dir']
+    from overcomplete.sae import TopKSAE, train_sae
+    from torch.utils.data import DataLoader, TensorDataset
+    method_name = input_dict.get('method_name', f'topk_sae')
+    method_dir = os.path.join(output_dir, method_name)
+    os.makedirs(method_dir, exist_ok=True)
+
+    output_dict = {}
+    representations = input_dict['representations']
+    seed = input_dict['seed']
+    input_dict['n_components'] = input_dict['top_k']
+
+    if input_dict.get('align_representations', None) is not None:
+        align_dir = input_dict['align_representations']
+        if align_dir == '0to1':
+            representations[0] = input_dict['repr0_mapped']
+            input_dict['red0'] = input_dict['r0m_red']
+        elif align_dir == '1to0':
+            representations[1] = input_dict['repr1_mapped']
+            input_dict['red1'] = input_dict['r1m_red']
+
+    if not load_outputs:
+        names = ['repr_0', 'repr_1']
+        for ri, repr_ in enumerate(representations):
+            input_dict['d_input'] = repr_.shape[1]
+            sae = TopKSAE(input_shape=input_dict['d_input'], nb_concepts=input_dict['nb_concepts'],
+                          top_k=input_dict['top_k'], device='cuda')
+            dataloader = DataLoader(TensorDataset(repr_), batch_size=1024)
+            optimizer = torch.optim.Adam(sae.parameters(), lr=5e-4)
+
+            def criterion(x, x_hat, pre_codes, codes, dictionary):
+                mse = (x - x_hat).square().mean()
+                return mse
+
+            logs = train_sae(sae, dataloader, criterion, optimizer,
+                             nb_epochs=input_dict['n_epochs'], device='cuda')
+
+            pre_codes, z_topk = sae.encode(repr_.to('cuda'))
+            top_concept_inds = z_topk.detach().mean(0).topk(input_dict['top_k']).indices
+            output_dict[names[ri]] = {'global_step': len(logs['avg_loss']), 'loss_history': logs['avg_loss'],
+                                      'U': z_topk.detach()[:, top_concept_inds].cpu().numpy(),
+                                      'V': sae.get_dictionary().detach().cpu().numpy(),
+                                      'recon_err': logs['r2'][-1]}
+
+            print(logs['r2'][-1])
+            # nmf = PCA(n_components=num_comp, random_state=seed)
+            # nmf.fit(repr_)
+            # U = nmf.transform(repr_)
+            # recon_err = np.linalg.norm(repr_ - nmf.inverse_transform(U))
+            # V =  nmf.components_
+
+            # output_dict[names[ri]] = {'recon_err': recon_err, 'U': U, 'V': V}
+
+        output_dict['method_dir'] = method_dir
+        output_dict['inputs'] = input_dict['method_dict']
+        with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
+            pkl.dump(output_dict, f)
+    else:
+        with open(os.path.join(method_dir, 'outputs.pkl'), 'rb') as f:
+            output_dict = pkl.load(f)
+
+    if input_dict.get('viz_params', None) is not None:
+        fig_paths = mfviz.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
+        with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
+            pkl.dump(fig_paths, f)
+
+    return output_dict
+
+
+def run_nlmcd(input_dict, load_outputs=False):
+    import random
+    from omegaconf import OmegaConf
+    from datetime import datetime
+    import multiprocessing
+    from src.nlmcd.executable_scripts.concept_discovery import main_fit_clustering
+    from src.nlmcd.executable_scripts.evaluate_alignment import main_evaluate_concept_alignment
+    from src.nlmcd.executable_scripts.generate_nlmcd_explanations import get_nlmcd_selected_indices
+    output_dir = input_dict['output_dir']
+    method_name = input_dict.get('method_name', f'nlmcd')
+    method_dir = os.path.join(output_dir, method_name)
+    os.makedirs(method_dir, exist_ok=True)
+
+    output_dict = {}
+    representations = input_dict['representations']
+    seed = input_dict['seed']
+
+    if input_dict.get('align_representations', None) is not None:
+        align_dir = input_dict['align_representations']
+        if align_dir == '0to1':
+            representations[0] = input_dict['repr0_mapped']
+            input_dict['red0'] = input_dict['r0m_red']
+        elif align_dir == '1to0':
+            representations[1] = input_dict['repr1_mapped']
+            input_dict['red1'] = input_dict['r1m_red']
+
+    if load_outputs:
+        with open(os.path.join(method_dir, 'outputs.pkl'), 'rb') as f:
+            output_dict = pkl.load(f)
+    else:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+
+        names = ['repr_0', 'repr_1']
+        cfg_dirs = []
+        for ri, repr_ in enumerate(representations):
+            # repr_ = repr_[:1000, :]
+            base_conf = OmegaConf.load("./src/nlmcd/source/conf/concept_discovery.yaml")
+            # cli_conf = OmegaConf.from_cli()
+            now = datetime.now()
+            now_conf = OmegaConf.create({"now_dir": f"{now:%Y-%m-%d}/{now:%H-%M-%S}"})
+            # merge them all
+            conf = OmegaConf.merge(now_conf, base_conf)
+            conf.exp_dir = method_dir
+            conf.now_dir = names[ri]
+            conf['repr_idx'] = str(ri)
+            multiprocessing.set_start_method("spawn", force=True)
+            cfg_dir = main_fit_clustering(conf, repr_, input_dict['dataset_labels'])
+            cfg_dirs.append(cfg_dir)
+
+        base_conf = OmegaConf.load("./src/nlmcd/source/conf/evaluate_alignment.yaml")
+        cli_conf = OmegaConf.from_cli()
+        now = datetime.now()
+        now_conf = OmegaConf.create({"now_dir": f"{now:%Y-%m-%d}/{now:%H-%M-%S}"})
+        # merge them all
+        conf = OmegaConf.merge(now_conf, base_conf, cli_conf)
+        conf.exp_dir = method_dir
+        conf.cfg_dir = os.path.join(method_dir, 'clustering')
+        conf.now_dir = '0_vs_1'
+        align_dir = os.path.join(method_dir, 'concept_alignment', '0_vs_1')
+        # cfg_dir = './results/concept_discovery/cub_pcbm_v_cub_masked_pcbm_ed=[27]/'
+        # exp_dir = './results/alignment/cub_pcbm_v_cub_masked_pcbm_ed=[27]'
+        # conf.cfg_dir = cfg_dir
+        # conf.exp_dir = exp_dir
+        main_evaluate_concept_alignment(conf)
+        date = "2024-10-11_15-00-00"
+        d = {}
+        hard_asns = []
+        for ri, name in enumerate(names):
+            sel_inds, hard_a = get_nlmcd_selected_indices(cfg_dirs[ri], ri, align_dir, date=date,
+                                                          num_concepts=input_dict['n_explanations'],
+                                                          viz_cfg_path="./src/nlmcd/source/conf/cluster_visualization.yaml")
+            hard_asns.append(hard_a)
+            d[str(ri)] = {"selected_indices": sel_inds}
+
+        output_dict['method_dir'] = method_dir
+        output_dict['inputs'] = input_dict['method_dict']
+        with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
+            pkl.dump({"inputs": {"add_null_cluster": False}, "repr_0": hard_asns[0], "repr_1": hard_asns[1]}, f)
+
+        with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
+            pkl.dump(d, f)
+
+    # if input_dict.get('viz_params', None) is not None:
+    #     fig_paths = mfviz.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
+    #     with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
+    #         pkl.dump(fig_paths, f)
+
+    return output_dict
+
+
 def run_usae(input_dict, load_outputs=False):
     from src.usae.overcomplete.sae.losses import (
         top_k_auxiliary_loss,
         top_k_auxiliary_loss_L1,
     )
+    from src.usae.uni_demo import prepare_and_train_universal_sae
+    from src.usae.overcomplete.sae import TopKSAE
     from src.usae.universal_sae.data import ActivationDataset
+    from src.usae.universal_sae.uni_analysis_rdx_version import run_full_analysis_pipeline
     output_dir = input_dict['output_dir']
     method_name = input_dict.get('method_name', f'usae')
     method_dir = os.path.join(output_dir, method_name)
@@ -531,6 +696,7 @@ def run_usae(input_dict, load_outputs=False):
             'repr_0':
                 {
                     "input_shape": representations[0].shape[1],
+                    'num_tokens': 1,
                     "model_mean": representations[0].mean(),
                     "model_std": representations[0].std(),
                     "checkpoint_path": "repr1_checkpoint_path_tmp",
@@ -538,6 +704,7 @@ def run_usae(input_dict, load_outputs=False):
             'repr_1':
                 {
                     "input_shape": representations[1].shape[1],
+                    'num_tokens': 1,
                     "model_mean": representations[0].mean(),
                     "model_std": representations[0].std(),
                     "checkpoint_path": "repr1_checkpoint_path_tmp",
@@ -564,18 +731,40 @@ def run_usae(input_dict, load_outputs=False):
             debug=input_dict["debug"],
             model_name="tmp_to_delete",
             divide_norm=input_dict["divide_norm"],
+            num_workers=4,
+            checkpoint_frequency=input_dict.get("checkpoint_frequency"),
+            early_stop=input_dict.get("early_stop"),
         )
         with torch.no_grad():
+            outputs = run_full_analysis_pipeline(input_dict,
+                                                 {'repr_0': representations[0], 'repr_1': representations[1]},
+                                                 model_zoo)
+            num_concepts_for_user = input_dict["num_concepts_for_user"]
+            entropy = outputs['analysis_results']['firing_entropy']['entropy']
+            sorted_inds = entropy.argsort()
+            repr_0_top_inds = []
+            repr_1_top_inds = []
+            for ind in sorted_inds:
+                pdist = outputs['analysis_results']['firing_entropy']['prob_dist'][ind]
+                if pdist[0] > pdist[1] and len(repr_0_top_inds) < num_concepts_for_user:
+                    repr_0_top_inds.append(ind.item())
+                elif pdist[1] > pdist[0] and len(repr_1_top_inds) < num_concepts_for_user:
+                    repr_1_top_inds.append(ind.item())
+                if len(repr_0_top_inds) == num_concepts_for_user and len(repr_1_top_inds) == num_concepts_for_user:
+                    break
+
+            top_inds = [repr_0_top_inds, repr_1_top_inds]
             for ri, model_name in enumerate(model_zoo):
                 sae = model_zoo[model_name]['sae']
-                repr_ = torch.tensor(representations[0] if model_name == 'repr_0' else representations[1])
+                repr_ = representations[0].clone().detach() if model_name == 'repr_0' else representations[
+                    1].clone().detach()
                 pre_codes, z_topk = sae.encode(repr_.to('cuda'))
-                top_concept_inds = z_topk.detach().mean(0).topk(sae_params['top_k']).indices
+                # top_concept_inds = z_topk.detach().mean(0).topk(sae_params['top_k']).indices
                 output_dict[names[ri]] = {
                     'global_step': len(logs['avg_loss']), 'loss_history': logs['avg_loss'],
-                                          'U': z_topk.detach()[:, top_concept_inds].cpu().numpy(),
-                                          'V': sae.get_dictionary().detach().cpu().numpy(),
-                                          'recon_err': logs['reconstruction_table'][ri][-1]
+                    'U': z_topk.detach()[:, top_inds[ri]].cpu().numpy(),
+                    'V': sae.get_dictionary().detach().cpu().numpy(),
+                    'recon_err': logs['reconstruction_table'][ri][-1]
                 }
 
         output_dict['method_dir'] = method_dir
@@ -912,31 +1101,38 @@ def main():
                     load_outputs = False
                     start_time = time.time()
                     if method == 'cka':
-                        continue
+                        # continue
                         run_cka(input_dict)
                     elif method == 'classification':
-                        continue
+                        # continue
                         run_clf(input_dict)
                     elif method == 'rdx':
-                        continue
-                        # if input_dict['sim_function'] != 'zp_local_scaling':
-                        #     continue
+                        # continue
+                        if input_dict['method_name'] != 'rdx_nb_lb_spectral':
+                            continue
                         run_rdx(input_dict, load_outputs=load_outputs)
                     elif method == 'kmeans':
-                        continue
+                        # continue
                         run_kmeans(input_dict, load_outputs=load_outputs)
                     elif method == 'nmf':
-                        continue
+                        # continue
                         run_nmf(input_dict, load_outputs=load_outputs)
                     elif method == 'pca':
-                        continue
+                        # continue
                         run_pca(input_dict, load_outputs=load_outputs)
                     elif method == 'sae':
-                        continue
+                        # continue
                         # plt.imsave(f'{output_root_folder}/img800.png', image_samples[1][800][0])
                         run_sae(input_dict, load_outputs=load_outputs)
+                    elif method == 'topk_sae':
+                        # continue
+                        run_topk_sae(input_dict, load_outputs=load_outputs)
                     elif method == 'usae':
+                        # continue
                         run_usae(input_dict, load_outputs=load_outputs)
+                    elif method == 'nlmcd':
+                        # continue
+                        run_nlmcd(input_dict, load_outputs=load_outputs)
                     else:
                         raise ValueError(f'Unknown method: {method}')
                     end_time = time.time()
