@@ -81,7 +81,7 @@ def load_model(model_name, ckpt_path=None, model_type=None, config=None, device=
     if ckpt_path:
 
         if model_type is None:
-            ckpt = torch.load(ckpt_path, map_location='cpu')
+            ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
             if 'model.fc.bias' in ckpt['state_dict']:
                 num_classes = ckpt['state_dict']['model.fc.bias'].shape[0]
             else:

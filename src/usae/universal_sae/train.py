@@ -142,19 +142,21 @@ def _avg_non_diagonal(arr):  # used for HP-Sweep to max R2 cross entries
 
 
 def train_cross_prediction_saes(
-    saes,
-    dataloader,
-    criterion,
-    sae_optimizers,
-    sae_schedulers,
-    model_zoo,
-    nb_epochs=20,
-    clip_grad=1.0,
-    monitoring=1,
-    device="cpu",
-    seeded=True,
-    model_name="",
-    divide_norm=False,
+        saes,
+        dataloader,
+        criterion,
+        sae_optimizers,
+        sae_schedulers,
+        model_zoo,
+        nb_epochs=20,
+        clip_grad=1.0,
+        monitoring=1,
+        device="cpu",
+        seeded=True,
+        model_name="",
+        divide_norm=False,
+        checkpoint_frequency=10,
+        early_stop=None
 ):
     """
     Parameters
@@ -211,6 +213,7 @@ def train_cross_prediction_saes(
         start_time = time.time()
         epoch_loss = 0.0
         epoch_error = 0.0
+        epoch_average_r2 = 0.0
         epoch_sparsity = 0.0
 
         # reconstructions table: logging reconstrution accuracy
@@ -221,10 +224,10 @@ def train_cross_prediction_saes(
         # Model Activations X and labels Y are in tuple: ( X{Dict: (models s_1...s_k)}, Y)
         # where each value from model key s_i is in form: N(batch size) x d_i(activation dimension)
         for i, batch in tqdm(
-            enumerate(dataloader),
-            total=len(dataloader),
-            desc="epoch progress",
-            dynamic_ncols=True,
+                enumerate(dataloader),
+                total=len(dataloader),
+                desc="epoch progress",
+                dynamic_ncols=True,
         ):
             batch_set, _ = batch
 
@@ -265,14 +268,14 @@ def train_cross_prediction_saes(
                 A_hat = saes[model].decode(z_i)
 
                 loss += (
-                    criterion(
-                        rearrange(A, "b n c -> (b n) c"),
-                        A_hat,
-                        z_pre,
-                        z_i,
-                        saes[model].get_dictionary(),
-                    )
-                    * norm_correct
+                        criterion(
+                            rearrange(A, "b n c -> (b n) c"),
+                            A_hat,
+                            z_pre,
+                            z_i,
+                            saes[model].get_dictionary(),
+                        )
+                        * norm_correct
                 )
 
                 if monitoring:
@@ -320,20 +323,37 @@ def train_cross_prediction_saes(
 
             cross_R2 = _avg_non_diagonal(avg_table)
             # wandb.log({"cross_R2": cross_R2})
+            logs['cross_R2'].append(cross_R2)
 
             print(
-                f"Epoch[{epoch+1}/{nb_epochs}], Loss: {avg_loss:.4f}, "
-                f"R2: {avg_error:.4f}, Sparsity: {avg_sparsity:.4f}, "
+                f"Epoch[{epoch + 1}/{nb_epochs}], Loss: {avg_loss:.4f}, "
+                f"R2: {avg_error:.4f}, Cross_R2: {cross_R2:.4f}, Sparsity: {avg_sparsity:.4f}, "
                 f"Time: {epoch_duration:.4f} seconds"
             )
 
+        if early_stop:
+            criteria = early_stop['criteria']
+            if criteria == 'r2_improvement':
+                threshold = early_stop['threshold']
+                epoch_span = early_stop.get('epoch_span', 1)
+                min_epochs = max(early_stop.get('min_epochs', epoch_span), epoch_span * 2)
+                if epoch > min_epochs:
+                    avg_r2_span_1 = np.mean(logs['cross_R2'][-epoch_span:])
+                    avg_r2_span_2 = np.mean(logs['cross_R2'][(-2*epoch_span):-epoch_span])
+                    print(avg_r2_span_1, avg_r2_span_2, avg_r2_span_1 - avg_r2_span_2, threshold)
+                    if (avg_r2_span_1 - avg_r2_span_2) < threshold:
+                        print(f"Early stopping at epoch {epoch} due to insufficient R2 improvement. "
+                              f"{avg_r2_span_1 - avg_r2_span_2} < {threshold}.")
+                        epoch = nb_epochs - 1
+                        break
+
         # Save checkpoints
-        if epoch % 10 == 0 or epoch + 1 == nb_epochs:
+        if checkpoint_frequency is not None and (epoch % checkpoint_frequency == 0 or epoch + 1 == nb_epochs):
             for model in saes:
                 model_n = model.split(".")[0]
                 checkpoint_path = (
-                    os.getcwd()
-                    + f"/weights/{model_name}/{model_n}/uni_{model_n}_checkpoint_{epoch}.pth"
+                        os.getcwd()
+                        + f"/weights/{model_name}/{model_n}/uni_{model_n}_checkpoint_{epoch}.pth"
                 )
                 model_zoo[model]["checkpoint_path"] = checkpoint_path
 

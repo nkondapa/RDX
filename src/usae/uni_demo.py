@@ -27,21 +27,24 @@ from src.usae.overcomplete.sae.losses import (
 
 
 def prepare_and_train_universal_sae(
-    dataset,
-    sae_class,
-    model_zoo,
-    criterion,
-    sae_params,
-    nb_components,
-    batch_size,
-    nb_epochs,
-    lr=3e-3,
-    weight_decay=1e-5,
-    nb_epochs_warmup=1.0,
-    final_lr=1e-6,
-    debug=True,
-    model_name="",
-    divide_norm=False,
+        dataset,
+        sae_class,
+        model_zoo,
+        criterion,
+        sae_params,
+        nb_components,
+        batch_size,
+        nb_epochs,
+        lr=3e-3,
+        weight_decay=1e-5,
+        nb_epochs_warmup=1.0,
+        final_lr=1e-6,
+        debug=True,
+        model_name="",
+        divide_norm=False,
+        num_workers=8,
+        checkpoint_frequency=10,
+        early_stop=None,
 ):
     if sae_class == TopKSAE:
         assert "top_k" in sae_params, "TopKSAE requires a top_k parameter"
@@ -50,7 +53,7 @@ def prepare_and_train_universal_sae(
     warmup_iters = int(dataset.__len__() / batch_size * nb_epochs_warmup)
 
     dataloader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=8
+        dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers
     )
 
     """ Establish a separate optimiser and scheduler for each model's encoder-decoder pair """
@@ -92,6 +95,8 @@ def prepare_and_train_universal_sae(
         model_zoo=model_zoo,
         divide_norm=divide_norm,
         seeded=True,
+        checkpoint_frequency=checkpoint_frequency,
+        early_stop=early_stop,
     )
 
     if debug:

@@ -27,3 +27,8 @@ torchsummary
 cblearn
 ttach
 einops
+omegaconf==2.3.0
+hdbscan==0.8.40
+umap-learn==0.5.7
+scikit-dimension==0.3.4
+

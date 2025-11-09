@@ -128,6 +128,26 @@ methods = {
         '0': {'color': 'green'},
         '1': {'color': 'red'}
     },
+    'topk_sae': {
+        '0': {'color': 'green'},
+        '1': {'color': 'red'}
+    },
+    'topk_sae_ar1to0': {
+        '0': {'color': 'green'},
+        '1': {'color': 'red'}
+    },
+    'topk_sae_ar0to1': {
+        '0': {'color': 'green'},
+        '1': {'color': 'red'}
+    },
+    'nlmcd': {
+        '0': {'color': 'green'},
+        '1': {'color': 'red'}
+    },
+    'usae': {
+        '0': {'color': 'green'},
+        '1': {'color': 'red'}
+    }
 }
 
 method_names = {"rdx_neighborhood": "$\mathtt{RDX}_{NB}$",
@@ -154,9 +174,15 @@ method_names = {"rdx_neighborhood": "$\mathtt{RDX}_{NB}$",
                 "kmeans": "$\mathtt{KMeans}$", "pca":
                     "$\mathtt{PCA}$", "clf": "Classifier",
                 "sae": "$\mathtt{SAE}$",
+                "topk_sae": "$\mathtt{TKSAE}$",
+                "usae": "$\mathtt{USAE}$",
                 "kmeans_ar1to0": "$\mathtt{KMeans}_{B'}$", "kmeans_ar0to1": "$\mathtt{KMeans}_{A'}$",
                 "sae_ar1to0": "$\mathtt{SAE}_{B'}$", "sae_ar0to1": "$\mathtt{SAE}_{A'}$",
+                "topk_sae_ar1to0": "$\mathtt{TKSAE}_{B'}$", "sae_ar0to1": "$\mathtt{TKSAE}_{A'}$",
+                "usae_ar1to0": "$\mathtt{USAE}_{B'}$", "usae_ar0to1": "$\mathtt{USAE}_{A'}$",
                 "cnmf_ar0to1": "$\mathtt{CNMF}_{A'}$", "cnmf_ar1to0": "$\mathtt{CNMF}_{B'}$",
+                "nlmcd": "$\mathtt{NLMCD}$",
+                "nlmcd_ar1to0": "$\mathtt{NLMCD}_{B'}$", "nlmcd_ar0to1": "$\mathtt{NLMCD}_{A'}$",
 
                 # "nmf": "$NMF$", "cnmf": "$CNMF$", "snmf": "$SNMF$",
                 # "kmeans": "$KMeans$", "pca":
@@ -243,9 +269,11 @@ def process_files(params):
                         clf_scores["agreement"].append(np.mean(data[folder][(method, method_file)]['agreement']['01']))
 
                     print(clf_scores["m0_acc"][-1], clf_scores["m1_acc"][-1], clf_scores["agreement"][-1])
-                elif ((method in ['nmf', 'cnmf', 'kmeans', 'pca', 'sae',
+                elif ((method in ['nmf', 'cnmf', 'kmeans', 'pca', 'sae', 'nlmcd', 'usae', 'topk_sae',
                                   'cnmf_ar0to1', 'cnmf_ar1to0', 'kmeans_ar0to1', 'kmeans_ar1to0',
-                                  'sae_ar0to1', 'sae_ar1to0']) and method_file == 'fig_paths.pkl'):
+                                  'sae_ar0to1', 'sae_ar1to0', 'nlmcd_ar0to1', 'nlmcd_ar1to0'
+                                  'usae_ar0to1', 'usae_ar1to0', 'topk_sae_ar1to0', 'topk_sae_ar1to0'
+                                  ]) and method_file == 'fig_paths.pkl'):
                     selected_indices[method]['0'].append(data[folder][(method, method_file)]['0']["selected_indices"])
                     selected_indices[method]['1'].append(data[folder][(method, method_file)]['1']["selected_indices"])
                 elif 'rdx' in method and method_file == 'fig_paths.pkl':
@@ -511,7 +539,8 @@ def bar_plot_explanation(params):
     method_to_color_index = {"rdx": 0,
                              "kmeans": 1,
                              "sae": 2,
-                             "nmf": 3, "cnmf": 3, "pca": 4}
+                             "nmf": 3, "cnmf": 3, "pca": 4,
+                             "nlmcd": 5, "usae": 6, "topk": 7}
     fontsize = 22
     metrics = ['BSR', 'TSD']
     metrics = ['BSR']
@@ -1088,6 +1117,9 @@ def analyze_mnist_modification_experiments():
         'sae': ['outputs.pkl', 'fig_paths.pkl'],
         'nmf': ['outputs.pkl', 'fig_paths.pkl'],
         'pca': ['outputs.pkl', 'fig_paths.pkl'],
+        'nlmcd': ['outputs.pkl', 'fig_paths.pkl'],
+        'usae': ['outputs.pkl', 'fig_paths.pkl'],
+        'topk_sae': ['outputs.pkl', 'fig_paths.pkl'],
     }
     datasets = ['mnist_subset_grouped']
     main(exp_names, datasets, main_params={"files": files,
@@ -1258,11 +1290,11 @@ if __name__ == "__main__":
     SHOW = True
 
     # minimal example
-    analyze_clip_inat_ar()
+    # analyze_clip_inat_ar()
 
 
     # analyze_mnist_835()
-    # analyze_mnist_modification_experiments()
+    analyze_mnist_modification_experiments()
     # analyze_cub_pcbm_experiments()
     # analyze_unaligned_real_model_experiments()
     # analyze_aligned_real_model_experiments()

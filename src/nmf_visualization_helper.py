@@ -27,7 +27,7 @@ def generate_visualizations(input_dict, output_dict, plot_params=None):
 
     r0_dm = torch.cdist(representations[0], representations[0])
     r1_dm = torch.cdist(representations[1], representations[1])
-    num_clusters = input_dict.get('n_components', input_dict.get('n_clusters', None))
+    num_clusters = input_dict.get("num_concepts_for_user", input_dict.get('n_components', input_dict.get('n_clusters', None)))
     cluster_list = list(range(num_clusters))
 
     names_dirs = ['Model 0', 'Model 1']
