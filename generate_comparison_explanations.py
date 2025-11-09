@@ -599,10 +599,6 @@ def run_nlmcd(input_dict, load_outputs=False):
         with open(os.path.join(method_dir, 'outputs.pkl'), 'rb') as f:
             output_dict = pkl.load(f)
     else:
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-
         names = ['repr_0', 'repr_1']
         cfg_dirs = []
         for ri, repr_ in enumerate(representations):
@@ -621,11 +617,11 @@ def run_nlmcd(input_dict, load_outputs=False):
             cfg_dirs.append(cfg_dir)
 
         base_conf = OmegaConf.load("./src/nlmcd/source/conf/evaluate_alignment.yaml")
-        cli_conf = OmegaConf.from_cli()
+        # cli_conf = OmegaConf.from_cli()
         now = datetime.now()
         now_conf = OmegaConf.create({"now_dir": f"{now:%Y-%m-%d}/{now:%H-%M-%S}"})
         # merge them all
-        conf = OmegaConf.merge(now_conf, base_conf, cli_conf)
+        conf = OmegaConf.merge(now_conf, base_conf)
         conf.exp_dir = method_dir
         conf.cfg_dir = os.path.join(method_dir, 'clustering')
         conf.now_dir = '0_vs_1'
@@ -847,7 +843,6 @@ def main():
     repr_0 = representation_params['repr_0']
     repr_1 = representation_params['repr_1']
     seed = config['seed']
-    set_seed(seed)
     device = 'cuda'
 
     # Parameters for grouping images from a large dataset (e.g. ImageNet) for concept comparison
@@ -1048,7 +1043,7 @@ def main():
                 repr0_mapped, repr1_mapped = None, None
                 r0m_red, r1m_red = None, None
                 for method_dict in config['methods']:
-
+                    set_seed(seed)
                     method = method_dict['method']
 
                     input_dict = copy.deepcopy(method_dict)
@@ -1101,37 +1096,37 @@ def main():
                     load_outputs = False
                     start_time = time.time()
                     if method == 'cka':
-                        # continue
+                        continue
                         run_cka(input_dict)
                     elif method == 'classification':
-                        # continue
+                        continue
                         run_clf(input_dict)
                     elif method == 'rdx':
-                        # continue
+                        continue
                         if input_dict['method_name'] != 'rdx_nb_lb_spectral':
                             continue
                         run_rdx(input_dict, load_outputs=load_outputs)
                     elif method == 'kmeans':
-                        # continue
+                        continue
                         run_kmeans(input_dict, load_outputs=load_outputs)
                     elif method == 'nmf':
-                        # continue
+                        continue
                         run_nmf(input_dict, load_outputs=load_outputs)
                     elif method == 'pca':
-                        # continue
+                        continue
                         run_pca(input_dict, load_outputs=load_outputs)
                     elif method == 'sae':
-                        # continue
+                        continue
                         # plt.imsave(f'{output_root_folder}/img800.png', image_samples[1][800][0])
                         run_sae(input_dict, load_outputs=load_outputs)
                     elif method == 'topk_sae':
-                        # continue
+                        continue
                         run_topk_sae(input_dict, load_outputs=load_outputs)
                     elif method == 'usae':
                         # continue
                         run_usae(input_dict, load_outputs=load_outputs)
                     elif method == 'nlmcd':
-                        # continue
+                        continue
                         run_nlmcd(input_dict, load_outputs=load_outputs)
                     else:
                         raise ValueError(f'Unknown method: {method}')

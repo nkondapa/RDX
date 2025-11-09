@@ -1150,6 +1150,9 @@ def analyze_cub_pcbm_experiments():
         'sae': ['outputs.pkl', 'fig_paths.pkl'],
         'cnmf': ['outputs.pkl', 'fig_paths.pkl'],
         'pca': ['outputs.pkl', 'fig_paths.pkl'],
+        'nlmcd': ['outputs.pkl', 'fig_paths.pkl'],
+        'usae': ['outputs.pkl', 'fig_paths.pkl'],
+        'topk_sae': ['outputs.pkl', 'fig_paths.pkl'],
     }
     datasets = ['cub_pcbm']
     main(exp_names, datasets, main_params={"files": files,
@@ -1294,8 +1297,8 @@ if __name__ == "__main__":
 
 
     # analyze_mnist_835()
-    analyze_mnist_modification_experiments()
-    # analyze_cub_pcbm_experiments()
+    # analyze_mnist_modification_experiments()
+    analyze_cub_pcbm_experiments()
     # analyze_unaligned_real_model_experiments()
     # analyze_aligned_real_model_experiments()
     exit()

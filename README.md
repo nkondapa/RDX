@@ -4,6 +4,7 @@
 
 #### Updates
 - NLMCD, TopK-SAE, and USAE added as baseline options
+  - tested on mnist modification and cub experiments
 
 
 ### Setup
@@ -58,3 +59,8 @@ There are several commented functions in the script that you can uncomment to vi
 }
 ```
 
+### Note on Reproducibility
+Our original code seeded once at the start of comparisons for all methods, however, we realized it is likely to cause
+inconsistencies due to arbitrary choices made in order of running the different comparisons. The new code re-seeds at the
+beginning of each comparison for all methods. This may lead to slightly different results than those reported in the paper,
+but we have checked that the trends remain the same. We apologize for any inconvenience this may cause.
