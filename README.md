@@ -1,8 +1,11 @@
 # Representational Difference Explanations (RDX)
 [![Project Page](https://img.shields.io/badge/Project%20Page-Link)](https://nkondapa.github.io/rdx-page/)
+[![OpenReview](https://img.shields.io/badge/OpenReview-a61717)](https://openreview.net/forum?id=ngvolie2nH)
 [![Paper](https://img.shields.io/badge/arXiv-PDF-b31b1b)]([https://arxiv.org/pdf/2505.23917](https://arxiv.org/pdf/2505.23917))
 
+
 #### Updates
+- Paper was accepted to NeurIPS 2025!
 - NLMCD, TopK-SAE, and USAE added as baseline options
   - tested on mnist modification and cub experiments
 
