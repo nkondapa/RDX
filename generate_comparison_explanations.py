@@ -31,6 +31,7 @@ from src import cka
 from src.rdx import RDX
 from src import nmf_visualization_helper as mfviz
 from src import kmeans_visualization_helper as kmviz
+from src import nlmcd_visualization_helper as nviz
 from pymf.pymf.snmf import SNMF
 from pymf.pymf.cnmf import CNMF
 from src.saev import SparseAutoencoder
@@ -584,7 +585,6 @@ def run_nlmcd(input_dict, load_outputs=False):
 
     output_dict = {}
     representations = input_dict['representations']
-    seed = input_dict['seed']
 
     if input_dict.get('align_representations', None) is not None:
         align_dir = input_dict['align_representations']
@@ -640,19 +640,20 @@ def run_nlmcd(input_dict, load_outputs=False):
                                                           viz_cfg_path="./src/nlmcd/source/conf/cluster_visualization.yaml")
             hard_asns.append(hard_a)
             d[str(ri)] = {"selected_indices": sel_inds}
+            output_dict[name] = {'labels': hard_a, 'selected_indices': sel_inds}
 
         output_dict['method_dir'] = method_dir
         output_dict['inputs'] = input_dict['method_dict']
         with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
-            pkl.dump({"inputs": {"add_null_cluster": False}, "repr_0": hard_asns[0], "repr_1": hard_asns[1]}, f)
+            pkl.dump(output_dict, f)
 
+        # with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
+        #     pkl.dump(d, f)
+
+    if input_dict.get('viz_params', None) is not None:
+        fig_paths = nviz.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
         with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
-            pkl.dump(d, f)
-
-    # if input_dict.get('viz_params', None) is not None:
-    #     fig_paths = mfviz.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
-    #     with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
-    #         pkl.dump(fig_paths, f)
+            pkl.dump(fig_paths, f)
 
     return output_dict
 
@@ -686,6 +687,10 @@ def run_usae(input_dict, load_outputs=False):
             representations[1] = input_dict['repr1_mapped']
             input_dict['red1'] = input_dict['r1m_red']
 
+    sae_params = input_dict['sae_params']
+    input_dict['n_components'] = sae_params['top_k']
+    output_dict['method_dir'] = method_dir
+    output_dict['inputs'] = input_dict['method_dict']
     if not load_outputs:
         names = ['repr_0', 'repr_1']
         model_zoo = {
@@ -707,8 +712,6 @@ def run_usae(input_dict, load_outputs=False):
                 }
         }
         dataset = ActivationDataset(representations[0], representations[1])
-        sae_params = input_dict['sae_params']
-        input_dict['n_components'] = sae_params['top_k']
         if input_dict["loss_criterion"] == "L2":
             criterion = top_k_auxiliary_loss
         else:
@@ -763,8 +766,6 @@ def run_usae(input_dict, load_outputs=False):
                     'recon_err': logs['reconstruction_table'][ri][-1]
                 }
 
-        output_dict['method_dir'] = method_dir
-        output_dict['inputs'] = input_dict['method_dict']
         with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
             pkl.dump(output_dict, f)
     else:
@@ -823,7 +824,6 @@ def main():
     parser.add_argument('--model_1_ckpt', type=str, default=None)
     parser.add_argument('--save_m1_representation', action='store_true')
     parser.add_argument('--save_m0_representation', action='store_true')
-    parser.add_argument('--create_human_evaluation_folder', action='store_true')
     args = parser.parse_args()
 
     with open(args.comparison_config, 'r') as f:
@@ -1123,10 +1123,10 @@ def main():
                         continue
                         run_topk_sae(input_dict, load_outputs=load_outputs)
                     elif method == 'usae':
-                        # continue
+                        continue
                         run_usae(input_dict, load_outputs=load_outputs)
                     elif method == 'nlmcd':
-                        continue
+                        # continue
                         run_nlmcd(input_dict, load_outputs=load_outputs)
                     else:
                         raise ValueError(f'Unknown method: {method}')

@@ -55,7 +55,6 @@ def get_nlmcd_selected_indices(config_path, model_ind, exp_dir, date, num_concep
 
     print(soft_assignments.shape, hard_assignments.shape)
 
-    np.random.seed(42)
     selected_indices = []
     for cluster_idx in np.unique(hard_assignments):
         if cluster_idx == -1 or cluster_idx not in topk_clusters:
