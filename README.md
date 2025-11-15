@@ -64,7 +64,7 @@ There are several commented functions in the script that you can uncomment to vi
 
 ### Note on Reproducibility
 Our original code seeded once at the start of comparisons for all methods, however, we realized it is likely to cause
-inconsistencies due to arbitrary choices made in order of running the different comparisons. The new code re-seeds at the
+inconsistencies due to arbitrary choices made in the order of running the different comparisons. The new code re-seeds at the
 beginning of each comparison for all methods. This may lead to slightly different results than those reported in the paper,
 but we have checked that the trends remain the same. We apologize for any inconvenience this may cause.
 
@@ -81,3 +81,6 @@ similarity across models and select the top k most dissimilar concepts for our c
 concepts we measure firing entropy for each concept and select the k concepts per model with the lowest firing entropy. Firing
 entropy is defined in the USAE paper and measures how evenly a concept activates across the different models. Low entropy
 indicates that a concept is more specific to certain models, and is thus more likely to be useful for distinguishing them.
+
+While we feel these choices are reasonable, it is possible that different concept selection strategies may improve baseline
+performance. Feel free to experiment with different strategies! 
