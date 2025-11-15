@@ -67,3 +67,17 @@ Our original code seeded once at the start of comparisons for all methods, howev
 inconsistencies due to arbitrary choices made in order of running the different comparisons. The new code re-seeds at the
 beginning of each comparison for all methods. This may lead to slightly different results than those reported in the paper,
 but we have checked that the trends remain the same. We apologize for any inconvenience this may cause.
+
+### Note on Concept Selection
+We stayed as close as possible to the original concept selection strategies for each baseline method. However, TopK-SAEs,
+NLMCD, and USAE concept selection strategies were modified for fair comparison on our comparison tasks. 
+
+Let k = the number of concepts shown to the user.
+- TopK-SAE uses 50 latents during training with the top k remaining active. TopK-SAE are trained on each representation 
+independently. After training, we select the k concepts per model with the largest mean activations to show to the user. 
+- NLMCD uses HDBSCAN clustering and generates an arbitrary number of concepts for each representation. We measure concept
+similarity across models and select the top k most dissimilar concepts for our comparisons.  
+- USAE learns an internal representation of 8 * (representation dimension), much larger than k. To select k
+concepts we measure firing entropy for each concept and select the k concepts per model with the lowest firing entropy. Firing
+entropy is defined in the USAE paper and measures how evenly a concept activates across the different models. Low entropy
+indicates that a concept is more specific to certain models, and is thus more likely to be useful for distinguishing them.
