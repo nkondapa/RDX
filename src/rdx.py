@@ -81,6 +81,31 @@ class RDX:
             r1_am = torch.exp(-beta * r1_dm)
             r0_am = torch.exp(-beta * r0_dm)
 
+            if params['guidance'] is not None:
+                if params['guidance'] == 'classifier':
+                    guid_labels = params['preds']
+                    print('Using classifier guidance')
+                elif params['guidance'] == 'ground_truth':
+                    guid_labels = [params['dataset_labels'], params['dataset_labels']]
+                    print('Using ground truth guidance')
+                else:
+                    raise ValueError(f"Unknown guidance {params['guidance']}")
+
+                dms = [r0_dm, r1_dm]
+                for i in range(2):
+                    _p = guid_labels[i]
+                    null_val = dms[i].max() * 5
+                    for pi in np.unique(_p):
+                        mask = _p == pi
+                        mask = torch.BoolTensor(mask)
+                        not_mask = ~mask
+                        print(dms[i][mask][:, not_mask].shape)
+                        mask_idx = torch.where(mask)[0]
+                        not_mask_idx = torch.where(not_mask)[0]
+
+                        dms[i][mask_idx[:, None], not_mask_idx] = null_val
+                        dms[i][not_mask_idx[:, None], mask_idx] = null_val
+
             if diff_function == 'locally_biased':
                 # needed because dm can be zero for mnd
                 denom = torch.min(torch.stack([r1_dm, r0_dm]), dim=0)[0] + 1
@@ -161,6 +186,22 @@ class RDX:
             am_10 = dm_01 = torch.exp(-beta * diff_10)
             am_01 = dm_10 = torch.exp(-beta * diff_01)
 
+            if params['classifier_guided']:
+                preds = params['preds']
+                ams = [r0_am, r1_am]
+                for i in range(2):
+                    _p = preds[i]
+                    for pi in np.unique(_p):
+                        mask = _p == pi
+                        mask = torch.BoolTensor(mask)
+                        not_mask = ~mask
+                        print(ams[i][mask][:, not_mask].shape)
+                        mask_idx = torch.where(mask)[0]
+                        not_mask_idx = torch.where(not_mask)[0]
+
+                        ams[i][mask_idx[:, None], not_mask_idx] = 0
+                        ams[i][not_mask_idx[:, None], mask_idx] = 0
+
             # affinity_mat = am_10
             # r1_red = PCA(2).fit_transform(student_repr.detach().cpu().numpy())
             # r2_red = PCA(2).fit_transform(teacher_repr.detach().cpu().numpy())
@@ -223,6 +264,22 @@ class RDX:
 
             am_10 = dm_01 = torch.exp(-beta * diff_10)
             am_01 = dm_10 = torch.exp(-beta * diff_01)
+
+            if params['classifier_guided']:
+                preds = params['preds']
+                ams = [r0_am, r1_am]
+                for i in range(2):
+                    _p = preds[i]
+                    for pi in np.unique(_p):
+                        mask = _p == pi
+                        mask = torch.BoolTensor(mask)
+                        not_mask = ~mask
+                        print(ams[i][mask][:, not_mask].shape)
+                        mask_idx = torch.where(mask)[0]
+                        not_mask_idx = torch.where(not_mask)[0]
+
+                        ams[i][mask_idx[:, None], not_mask_idx] = 0
+                        ams[i][not_mask_idx[:, None], mask_idx] = 0
 
             # fig, axes = plt.subplots(1, 2)
             # random_inds = np.random.choice(np.arange(diff_10.shape[0] * diff_10.shape[1]), 1000, replace=False)
@@ -414,7 +471,7 @@ class RDX:
         cmap, get_marker, legend_plot = ph.make_large_cmap(len(np.unique(dataset_labels)))
         for labi, lab in enumerate(np.unique(dataset_labels)):
             mask = dataset_labels == lab
-            c = cmap(dataset_labels[mask])
+            c = cmap([labi] * mask.sum())
             alpha = 0.5
             marker = get_marker(labi)
             axes[0, 0].scatter(r0_red[mask, 0], r0_red[mask, 1], c=c, alpha=alpha, marker=marker, label=f'{lab}')

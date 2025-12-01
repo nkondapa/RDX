@@ -28,15 +28,18 @@ def default_split_points(model_name):
 def split_model(model, params=None):
     if params is None:
         params = {}
+
+    overwrite_fc = params.get('overwrite_fc', False)
     if isinstance(model, ResNet):
         split_before_gap = params.get('split_before_gap', False)
         if not split_before_gap:
             fc = copy.deepcopy(model.fc)
             backbone = model
-            backbone.fc = nn.Identity()
         elif split_before_gap:
             fc = copy.deepcopy(model.fc)
             backbone = model
+
+        if overwrite_fc:
             backbone.fc = nn.Identity()
             backbone.global_pool = nn.Identity()
 
@@ -49,15 +52,20 @@ def split_model(model, params=None):
             head = torch.nn.Sequential(copy.deepcopy(model.norm), copy.deepcopy(model.fc_norm),
                                         copy.deepcopy(model.head))
             backbone = model
-            backbone.norm = nn.Identity()
-            backbone.fc_norm = nn.Identity()
-            backbone.head = nn.Identity()
+            # backbone.norm = nn.Identity()
+            # backbone.fc_norm = nn.Identity()
+            # backbone.head = nn.Identity()
         else:
             head = copy.deepcopy(model.head)
             backbone = model
-            backbone.head = nn.Identity()
+            # backbone.head = nn.Identity()
         if prep_for_ensembling:
             backbone.global_pool = None
+
+        if overwrite_fc:
+            backbone.norm = nn.Identity()
+            backbone.fc_norm = nn.Identity()
+            backbone.head = nn.Identity()
         return backbone, head
 
     elif isinstance(model, ConvNet) or isinstance(model, ConvNetTiny):
@@ -65,10 +73,13 @@ def split_model(model, params=None):
         if not split_before_gap:
             fc = copy.deepcopy(model.fc)
             backbone = model
-            backbone.fc = nn.Identity()
+            # backbone.fc = nn.Identity()
         elif split_before_gap:
             fc = copy.deepcopy(model.fc)
             backbone = model
+            # backbone.fc = nn.Identity()
+            # backbone.global_pool = nn.Identity()
+        if overwrite_fc:
             backbone.fc = nn.Identity()
             backbone.global_pool = nn.Identity()
         return backbone, fc
