@@ -1183,6 +1183,9 @@ def analyze_unaligned_real_model_experiments():
         'sae': ['outputs.pkl', 'fig_paths.pkl'],
         'cnmf': ['outputs.pkl', 'fig_paths.pkl'],
         'pca': ['outputs.pkl', 'fig_paths.pkl'],
+        'nlmcd': ['outputs.pkl', 'fig_paths.pkl'],
+        'usae': ['outputs.pkl', 'fig_paths.pkl'],
+        'topk_sae': ['outputs.pkl', 'fig_paths.pkl'],
     }
     datasets = [
         # "cub_pcbm",
@@ -1222,6 +1225,7 @@ def analyze_aligned_real_model_experiments():
         'sae_ar1to0': ['outputs.pkl', 'fig_paths.pkl'],
         'cnmf_ar0to1': ['outputs.pkl', 'fig_paths.pkl'],
         'cnmf_ar1to0': ['outputs.pkl', 'fig_paths.pkl'],
+
     }
     datasets = [
         # "cub_pcbm",
@@ -1298,7 +1302,7 @@ if __name__ == "__main__":
 
     # analyze_mnist_835()
     # analyze_mnist_modification_experiments()
-    analyze_cub_pcbm_experiments()
-    # analyze_unaligned_real_model_experiments()
+    # analyze_cub_pcbm_experiments()
+    analyze_unaligned_real_model_experiments()
     # analyze_aligned_real_model_experiments()
     exit()

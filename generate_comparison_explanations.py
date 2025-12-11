@@ -78,6 +78,7 @@ def shared_concept_proposals_inference(params):
     labels = params['labels']
     raw_data = params.get('raw_data', None)
     images_preprocessed_list = []
+    outs = []
     if not patchify:
 
         for mi in range(len(fe_outs)):
@@ -101,7 +102,7 @@ def shared_concept_proposals_inference(params):
                 act_hooks[mi].concatenate_layer_activations()
                 print(f'Inference took {time.time() - st} seconds, {images_preprocessed.shape[0]} images')
                 print(len(image_list))
-
+                outs.append(out)
     else:
 
         dataset_name = dataset_name
@@ -137,6 +138,7 @@ def shared_concept_proposals_inference(params):
 
             out = _batch_inference(models[mi], images_preprocessed, batch_size=256, resize=image_size, device=device)
             act_hooks[mi].concatenate_layer_activations()
+            outs.append(out)
 
         num_patches_per_image = patches.shape[0] // len(image_list)
         num_patches_per_image /= subsample
@@ -165,7 +167,7 @@ def shared_concept_proposals_inference(params):
 
     unnormalize = lambda x: unnormalize_base(x, mean, std)
 
-    return images_preprocessed_list, labels, unnormalize
+    return images_preprocessed_list, labels, outs, unnormalize
 
 
 def run_cka(input_dict):
@@ -244,7 +246,7 @@ def run_clf(input_dict):
     with open(os.path.join(method_dir, 'outputs.txt'), 'w') as f:
         f.write(s_all)
 
-    output_dict = {'accs': accs, 'agreement': agreement, 'method_dir': method_dir, 'preds': preds,
+    output_dict = {'accs': accs, 'agreement': agreement, 'method_dir': method_dir, 'preds': preds, 'repr_keys': repr_keys,
                    'labels': dataset_labels}
     with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
         pkl.dump(output_dict, f)
@@ -256,6 +258,7 @@ def run_rdx(input_dict, load_outputs=False):
     output_dir = input_dict['output_dir']
     sim_function = input_dict['sim_function']
     method_name = input_dict.get('method_name', f'rdx_{sim_function}')
+
     method_dir = os.path.join(output_dir, method_name)
     os.makedirs(method_dir, exist_ok=True)
 
@@ -706,8 +709,8 @@ def run_usae(input_dict, load_outputs=False):
                 {
                     "input_shape": representations[1].shape[1],
                     'num_tokens': 1,
-                    "model_mean": representations[0].mean(),
-                    "model_std": representations[0].std(),
+                    "model_mean": representations[1].mean(),
+                    "model_std": representations[1].std(),
                     "checkpoint_path": "repr1_checkpoint_path_tmp",
                 }
         }
@@ -855,7 +858,7 @@ def main():
     target_classes = image_selection_params.get('target_classes', None)
     move_to_cpu_every = config.get('move_to_cpu_every', None)
     move_to_cpu_in_hook = config.get('move_to_cpu_in_hook', None)
-    classifier_guided = config.get('classifier_guided', False)
+    guidance = config.get('guidance', None)
     image_group_strategy = image_selection_params['image_group_strategy']
     if image_group_strategy == 'full_dataset':
         igs_params = None
@@ -976,6 +979,24 @@ def main():
                 tmp = tmp[:, mask]
 
             representations.append(tmp)
+        elif 'repr_path' in param_dicts:
+            fe_outs.append({'layer_names': [None]})
+            transforms.append(None)
+            act_hooks.append(None)
+            models.append(None)
+            clfs.append(None)
+            og_models.append(None)
+            repr_path = param_dicts['repr_path']
+            if repr_path.endswith('.pkl'):
+                with open(repr_path, 'rb') as f:
+                    repr = pkl.load(f)
+            elif repr_path.endswith('.npy'):
+                repr = np.load(repr_path)
+            elif repr_path.endswith('.pt') or repr_path.endswith('.pth'):
+                repr = torch.load(repr_path)
+            else:
+                raise ValueError(f'Unknown representation file format: {repr_path}')
+            representations.append(torch.FloatTensor(repr))
 
     if image_selection_params.get('share_transforms'):
         transforms[0] = transforms[1]
@@ -986,10 +1007,13 @@ def main():
         m0_layers = [m0_layers[0]]
         m1_layers = [m1_layers[0]]
 
+
     labels = np.array(labels)
 
     ci = 0
     pbar = tqdm(list(image_group.keys()))
+    # preds = []
+    preds = None
     for image_group_key in pbar:
         pbar.set_description(f'Class {image_group_key}')
 
@@ -1003,7 +1027,9 @@ def main():
             patchify=patchify, fe_outs=fe_outs, transforms=transforms, act_hooks=act_hooks, models=models,
             raw_data=raw_data,
         )
-        images_preprocessed, labels, unnormalize = shared_concept_proposals_inference(params)
+        images_preprocessed, labels, outs, unnormalize = shared_concept_proposals_inference(params)
+        # preds.append(outs[0].argmax(1))
+        # preds.append(outs[1].argmax(1))
         if len(images_preprocessed) == 1:
             image_samples = [unnormalize(images_preprocessed[0])] * 2
         elif len(images_preprocessed) == 2:
@@ -1015,6 +1041,19 @@ def main():
 
         print('Comparing model concepts')
         # pl.seed_everything(42)
+        if guidance is not None and guidance == 'classifier':
+            # re-order methods so that classification is run first
+            method_dicts = config['methods']
+            clf_method_ind = None
+            for mi, method_dict in enumerate(method_dicts):
+                if method_dict['method'] == 'classification':
+                    clf_method_ind = mi
+                    break
+            if clf_method_ind is None:
+                raise ValueError('Guidance is set to classifier but no classification method dict found in methods list')
+            else:
+                method_dicts[0], method_dicts[clf_method_ind] = method_dicts[clf_method_ind], method_dicts[0]
+                config['methods'] = method_dicts
 
         for lj, m1_layer in enumerate(m1_layers):  # reverse order to start from the last layer
             if m1_layer is not None:
@@ -1022,7 +1061,6 @@ def main():
                 representations[1] = activations2
 
             for li, m0_layer in enumerate(m0_layers):  # reverse order to start from the last layer
-
                 if m0_layer is not None:
                     activations1 = act_hooks[0].layer_activations[m0_layer]
                     representations[0] = activations1
@@ -1056,6 +1094,7 @@ def main():
                     input_dict['image_samples'] = image_samples[0]
                     # added so that it can be separated and added to saved outputs and can be used for viz
                     input_dict['method_dict'] = method_dict
+                    input_dict['guidance'] = guidance
                     method_name = method_dict.get("method_name", 'default')
 
                     align_reps = method_dict.get('align_representations', None)
@@ -1082,6 +1121,9 @@ def main():
                         input_dict['r0m_red'] = r0m_red
                         input_dict['r1m_red'] = r1m_red
 
+                    if guidance == 'classifier':
+                        input_dict['preds'] = preds
+
                     # if method_name != 'rdx_nb_lb_eigc' and method_name != 'rdx_nb_lb_pagerank':
                     #     continue
 
@@ -1094,15 +1136,18 @@ def main():
                     #     continue
                     print(method_name)
                     load_outputs = False
+
                     start_time = time.time()
                     if method == 'cka':
-                        continue
+                        # continue
                         run_cka(input_dict)
                     elif method == 'classification':
-                        continue
-                        run_clf(input_dict)
+                        # continue
+                        output_dict = run_clf(input_dict)
+                        if guidance == 'classifier':
+                            preds = output_dict['preds'].T
                     elif method == 'rdx':
-                        continue
+                        # continue
                         if input_dict['method_name'] != 'rdx_nb_lb_spectral':
                             continue
                         run_rdx(input_dict, load_outputs=load_outputs)
@@ -1113,7 +1158,7 @@ def main():
                         continue
                         run_nmf(input_dict, load_outputs=load_outputs)
                     elif method == 'pca':
-                        continue
+                        # continue
                         run_pca(input_dict, load_outputs=load_outputs)
                     elif method == 'sae':
                         continue
@@ -1126,7 +1171,7 @@ def main():
                         continue
                         run_usae(input_dict, load_outputs=load_outputs)
                     elif method == 'nlmcd':
-                        # continue
+                        continue
                         run_nlmcd(input_dict, load_outputs=load_outputs)
                     else:
                         raise ValueError(f'Unknown method: {method}')

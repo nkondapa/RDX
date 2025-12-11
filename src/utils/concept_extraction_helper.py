@@ -91,6 +91,14 @@ def load_feature_extraction_layers(model, feature_layer_params):
             def post_activation_func(x):
                 return x[:, 0, :]
             out['post_activation_func'] = post_activation_func
+
+        elif feature_layer_version == 'output_logits':
+            out['layer_type'] = 'head'
+            out['layers'] = [model.head]
+            out['layer_names'] = ['head']
+            def post_activation_func(x):
+                return x
+            out['post_activation_func'] = post_activation_func
         else:
             raise ValueError(f'Unknown feature_layer_version: {feature_layer_version}')
 

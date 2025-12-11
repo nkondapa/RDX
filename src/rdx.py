@@ -26,8 +26,18 @@ class RDX:
             repr0_mapped = params['repr0_mapped']
             repr1_mapped = params['repr1_mapped']
 
+            # grab predictions for classifier guidance if available
+            if 'preds' in params:
+                tmp0 = params['preds'][[2, 1], :]
+                tmp1 = params['preds'][[0, 3], :]
+            else:
+                tmp0 = None
+                tmp1 = None
+            params['preds'] = tmp0
             graph_dict_a = self.construct_graph(repr0_mapped, repr1, params)
+            params['preds'] = tmp1
             graph_dict_b = self.construct_graph(repr0, repr1_mapped, params)
+
             # merge the two graph dicts
             graph_dict = {}
             graph_dict['am_10'] = graph_dict_a['am_10']
@@ -53,8 +63,38 @@ class RDX:
         return output_dict
 
     @staticmethod
+    def apply_guid_labels(dm, guid_labels):
+
+        _p = guid_labels
+        null_val = dm.max() * 5
+        for pi in np.unique(_p):
+            mask = _p == pi
+            mask = torch.BoolTensor(mask)
+            not_mask = ~mask
+            print(dm[mask][:, not_mask].shape)
+            mask_idx = torch.where(mask)[0]
+            not_mask_idx = torch.where(not_mask)[0]
+
+            dm[mask_idx[:, None], not_mask_idx] = null_val
+            dm[not_mask_idx[:, None], mask_idx] = null_val
+        return dm
+
+    @staticmethod
     def construct_graph(repr0, repr1, params):
         sim_function = params['sim_function']
+
+        if params['guidance'] is not None:
+            if params['guidance'] == 'classifier':
+                guid_labels = params['preds']
+                print('Using classifier guidance')
+            elif params['guidance'] == 'ground_truth':
+                guid_labels = [params['dataset_labels'], params['dataset_labels']]
+                print('Using ground truth guidance')
+            else:
+                raise ValueError(f"Unknown guidance {params['guidance']}")
+        else:
+            guid_labels = None
+
         if sim_function == 'neighborhood':
             beta = params.get('beta', 5)
             diff_function = params.get('diff_function', 'locally_biased')
@@ -81,30 +121,9 @@ class RDX:
             r1_am = torch.exp(-beta * r1_dm)
             r0_am = torch.exp(-beta * r0_dm)
 
-            if params['guidance'] is not None:
-                if params['guidance'] == 'classifier':
-                    guid_labels = params['preds']
-                    print('Using classifier guidance')
-                elif params['guidance'] == 'ground_truth':
-                    guid_labels = [params['dataset_labels'], params['dataset_labels']]
-                    print('Using ground truth guidance')
-                else:
-                    raise ValueError(f"Unknown guidance {params['guidance']}")
-
-                dms = [r0_dm, r1_dm]
-                for i in range(2):
-                    _p = guid_labels[i]
-                    null_val = dms[i].max() * 5
-                    for pi in np.unique(_p):
-                        mask = _p == pi
-                        mask = torch.BoolTensor(mask)
-                        not_mask = ~mask
-                        print(dms[i][mask][:, not_mask].shape)
-                        mask_idx = torch.where(mask)[0]
-                        not_mask_idx = torch.where(not_mask)[0]
-
-                        dms[i][mask_idx[:, None], not_mask_idx] = null_val
-                        dms[i][not_mask_idx[:, None], mask_idx] = null_val
+            if guid_labels is not None:
+                r0_dm = RDX().apply_guid_labels(r0_dm, guid_labels[0])
+                r1_dm = RDX().apply_guid_labels(r1_dm, guid_labels[1])
 
             if diff_function == 'locally_biased':
                 # needed because dm can be zero for mnd
