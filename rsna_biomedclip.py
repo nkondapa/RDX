@@ -25,6 +25,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 import torchvision
 from timm.models.vision_transformer import VisionTransformer, Block
+from functools import partial
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 def parse_args():
@@ -112,30 +113,157 @@ def activation_patching(visual, train_ds, inds, args, force_run=False):
     dataloader = DataLoader(torch.utils.data.Subset(train_ds, inds), batch_size=args.batch_size, shuffle=False,
                             num_workers=4, )
 
-    # TODO
     '''
         Collect Activations
         1) run forward pass on subset with collection hooks at
             1) attn head outputs N, H, S, D
             3) Block outputs N, S, D
-        
-        Patch one block at a time 
+
+        Patch one block at a time
         1) For each block, patch each attention head output with mean activations for all inputs
-        
+
         Metric - at each block, measure the top 16 nearest neighbor change for each sample (N)
     '''
 
+    from src.utils.hookable_timm_modules import replace_attention_modules, replace_mlp_modules
 
     # cache activations at target layers on subset for act patching experiments
-    if not os.path.exists(os.path.join(args.output_dir, 'full_cache_subset.pkl')) or force_run:
-        # TODO
-        with open(os.path.join(args.output_dir, 'full_cache_subset.pkl'), 'wb') as f:
+    cache_path = os.path.join(args.output_dir, 'full_cache_subset.pkl')
+    if not os.path.exists(cache_path) or force_run:
+        replaced_attn = replace_attention_modules(visual)
+
+        # Collect attn head outputs via hooks: reshape (B, S, C) -> (B, S, H, D) and accumulate
+        attn_head_acts = {name: [] for name, _ in replaced_attn}
+        for name, m in replaced_attn:
+            num_heads, head_dim = m.num_heads, m.head_dim
+            collector = attn_head_acts[name]
+            def make_collect_hook(collector, num_heads, head_dim):
+                def collect_hook(x):
+                    B, S, C = x.shape
+                    collector.append(x.reshape(B, S, num_heads, head_dim).detach().cpu().clone())
+                    return x
+                return collect_hook
+            m.register_hook('attn_output', make_collect_hook(collector, num_heads, head_dim))
+
+        # Collect block outputs: (N, S, D)
+        block_names, block_modules = find_transformer_blocks(visual)
+        block_hook = ActivationHookV2(move_to_cpu_in_hook=True)
+        block_hook.register_hooks(block_names, block_modules)
+
+        # Forward pass
+        all_labels = []
+        visual.eval()
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc='Collecting activations for patching'):
+                images = batch['input'].to(args.device)
+                all_labels.append(batch['target'])
+                visual(images)
+
+        labels = torch.cat(all_labels, dim=0)
+
+        # Concatenate attn head outputs
+        attn_head_acts = {name: torch.cat(chunks, dim=0) for name, chunks in attn_head_acts.items()}
+
+        # Concatenate block outputs
+        block_hook.concatenate_layer_activations()
+        block_acts = {k: v for k, v in block_hook.layer_activations.items()}
+
+        activations = {
+            'attn_head': attn_head_acts,   # {name: (N, S, H, D)} per-head attn output
+            'block': block_acts,            # {name: (N, S, D)} block output
+        }
+
+        # Cleanup
+        block_hook.remove_hooks()
+        for _, m in replaced_attn:
+            m.clear_hooks()
+
+        with open(cache_path, 'wb') as f:
             pkl.dump(dict(activations=activations, labels=labels), f)
     else:
-        with open(os.path.join(args.output_dir, 'full_cache_subset.pkl'), 'rb') as f:
+        replaced_attn = replace_attention_modules(visual)
+        with open(cache_path, 'rb') as f:
             cached = pkl.load(f)
             activations = cached['activations']
             labels = cached['labels']
+
+    block_names, block_modules = find_transformer_blocks(visual)
+    torch.cuda.empty_cache()
+
+    # for bi, block_name in enumerate(block_names[:-1]):
+    #     curr_block_act = activations['block'][block_name].cuda()
+    #     next_block_act = block_modules[bi+1](curr_block_act).cpu()
+    #     print(torch.max(activations['block'][block_names[bi + 1]] - next_block_act))
+    #     torch.cuda.empty_cache()
+
+    # block_hook = ActivationHookV2(move_to_cpu_in_hook=True)
+    # block_hook.register_hooks(block_names, block_modules)
+    # block_hook.remove_hooks()
+
+    def patch_hook(x, head_index, patch_val, num_heads, head_dim):
+        # print("patching head", head_index, x.shape)
+        B, S, C = x.shape
+        x = x.reshape(B, S, num_heads, head_dim)
+        x[:, :, head_index, :] = patch_val
+        x = x.reshape(B, S, C)
+        # print('out ', x.shape)
+        return x
+    
+    def topk_neighbor_similarity(m0_embs, m1_embs, k=16):
+        m0_neighbor_mat = torch.cdist(m0_embs, m0_embs)
+        m1_neighbor_mat = torch.cdist(m1_embs, m1_embs)
+        m0_nn = m0_neighbor_mat.argsort(dim=1)
+        m1_nn = m1_neighbor_mat.argsort(dim=1)
+
+        isti = []
+        for i in range(m0_nn.shape[0]):
+            topk_m0 = set(m0_nn[i, 1:k + 1].flatten().tolist())
+            topk_m1 = set(m1_nn[i, 1:k + 1].flatten().tolist())
+            intersection = len(topk_m0.intersection(topk_m1))
+            isti.append(intersection / k)
+        return torch.mean(torch.tensor(isti)).item()
+
+    ra_dict = dict(replaced_attn)
+    batch_size = 256
+    block_head_score = []
+    for bi, block_name in enumerate(block_names[:-1]):
+        next_block_name = block_names[bi + 1]
+        name = f'{next_block_name}.attn'
+        m = ra_dict[name]
+        head_score = []
+        for head_index in range(m.num_heads):
+            patch_val = activations['attn_head'][name][:, :, head_index, :].mean(dim=0)
+            m.register_hook('attn_output', partial(patch_hook, head_index=head_index, patch_val=patch_val,
+                                                   num_heads=m.num_heads, head_dim=m.head_dim))
+            next_block_acts = []
+            with torch.no_grad():
+                for bsi in range(0, len(activations['block'][block_name]), batch_size):
+                    batch_block_act = activations['block'][block_name][bsi:bsi+batch_size].cuda()
+                    next_block_act = block_modules[bi + 1](batch_block_act).cpu()
+                    next_block_acts.append(next_block_act)
+                    # print(torch.max(activations['block'][next_block_name][bsi:bsi+batch_size] - next_block_act))
+                    torch.cuda.empty_cache()
+            patched_acts = torch.cat(next_block_acts)
+            score = 1 - topk_neighbor_similarity(patched_acts[:, -1], activations['block'][next_block_name][:, -1], k=16)
+            head_score.append(score)
+            print(f'Block {block_name} head {head_index} patch score: {score:.4f}')
+            m.clear_hooks()
+        block_head_score.append(head_score)
+
+    block_head_score = np.array(block_head_score)
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.imshow(block_head_score.T, cmap='viridis')
+    plt.colorbar(label='1 - Top-16 Neighbor Similarity')
+    plt.ylabel('Attention Head Index')
+    plt.xlabel('Block Index')
+    plt.xticks(ticks=range(len(block_names)-1), labels=[bn.split(".")[-1] for bn in block_names[1:]])
+    plt.title('Patching Score')
+    plt.gca().invert_yaxis()
+    plt.tight_layout()
+    plt.show()
+
+
 
 
 
@@ -161,6 +289,11 @@ def main():
     train_ds = RSNAPneumoniaDataset(
         root=args.data_root, split='train', transform=preprocess, binary=True
     )
+    inds = np.random.choice(len(train_ds), 1000, replace=False)
+    activation_patching(visual, train_ds, inds, args, force_run=False)
+
+    exit()
+
     # 3. Load dataset & cache activations
     cache_path = os.path.join(args.output_dir, 'train_activations.pt')
     if os.path.exists(cache_path):
