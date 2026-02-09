@@ -12,6 +12,7 @@ from PIL import Image
 import torchvision
 from src.cka import CudaCKA
 
+
 class RDX:
 
     def __init__(self):
@@ -28,6 +29,7 @@ class RDX:
 
             # grab predictions for classifier guidance if available
             if 'preds' in params:
+                og_preds = params['preds']
                 tmp0 = params['preds'][[2, 1], :]
                 tmp1 = params['preds'][[0, 3], :]
             else:
@@ -37,6 +39,7 @@ class RDX:
             graph_dict_a = self.construct_graph(repr0_mapped, repr1, params)
             params['preds'] = tmp1
             graph_dict_b = self.construct_graph(repr0, repr1_mapped, params)
+            params['preds'] = og_preds # reset for visualizations later
 
             # merge the two graph dicts
             graph_dict = {}
@@ -66,7 +69,7 @@ class RDX:
     def apply_guid_labels(dm, guid_labels):
 
         _p = guid_labels
-        null_val = dm.max() * 5
+        null_val = dm.max() * 10
         for pi in np.unique(_p):
             mask = _p == pi
             mask = torch.BoolTensor(mask)
@@ -90,10 +93,44 @@ class RDX:
             elif params['guidance'] == 'ground_truth':
                 guid_labels = [params['dataset_labels'], params['dataset_labels']]
                 print('Using ground truth guidance')
+            elif params['guidance'] == 'tpfp':
+                guid_labels = []
+                for i in range(2):
+                    labels = np.zeros_like(params['dataset_labels'])
+                    for li, lab in enumerate(np.unique(params['dataset_labels'])):
+                        true_pred = (params['preds'][i] == lab) & (params['dataset_labels'] == lab)
+                        false_pred = (params['preds'][i] == lab) & (params['dataset_labels'] != lab)
+                        labels[true_pred] = 1 + (li * 2)
+                        labels[false_pred] = 2 + (li * 2)
+                    guid_labels.append(labels)
+            elif params['guidance'] == 'tpnfpn':
+                # this doesn't make sense in the multiclass setting
+                assert len(np.unique(params['dataset_labels'])) == 2
+                guid_labels = []
+                for i in range(2):
+                    labels = np.zeros_like(params['dataset_labels'])
+                    for li, lab in enumerate(np.unique(params['dataset_labels'])[:1]):
+                        true_pos = (params['preds'][i] == lab) & (params['dataset_labels'] == lab)
+                        false_pos = (params['preds'][i] == lab) & (params['dataset_labels'] != lab)
+                        true_neg = (params['preds'][i] != lab) & (params['dataset_labels'] != lab)
+                        false_neg = (params['preds'][i] != lab) & (params['dataset_labels'] == lab)
+                        labels[true_pos] = 1
+                        labels[true_neg] = 2
+                        labels[false_pos] = 3
+                        labels[false_neg] = 4
+                    guid_labels.append(labels)
+
+                # guid_labels = [labels,
+                #                (params['preds'][1] == params['dataset_labels']) & (params['dataset_labels'] == 1)
+                #                ]
+            elif params['guidance'] == 'true_pos':
+                guid_labels = [(params['preds'][0] == params['dataset_labels']) & (params['dataset_labels'] == 1),
+                               (params['preds'][1] == params['dataset_labels']) & (params['dataset_labels'] == 1)]
             else:
                 raise ValueError(f"Unknown guidance {params['guidance']}")
         else:
             guid_labels = None
+
 
         if sim_function == 'neighborhood':
             beta = params.get('beta', 5)
@@ -159,7 +196,8 @@ class RDX:
             # r1_red = PCA(2).fit_transform(student_repr.detach().cpu().numpy())
             # r2_red = PCA(2).fit_transform(teacher_repr.detach().cpu().numpy())
 
-            return dict(am_10=am_10, am_01=am_01, dm_10=dm_10, dm_01=dm_01, r0_am=r0_am, r1_am=r1_am, r0_dm=r0_dm, r1_dm=r1_dm,
+            return dict(am_10=am_10, am_01=am_01, dm_10=dm_10, dm_01=dm_01, r0_am=r0_am, r1_am=r1_am, r0_dm=r0_dm,
+                        r1_dm=r1_dm,
                         diff_10=diff_10, diff_01=diff_01, r0_sort=r0_sort, r1_sort=r1_sort)
 
         elif sim_function == 'max_normalized_distance':
@@ -225,7 +263,8 @@ class RDX:
             # r1_red = PCA(2).fit_transform(student_repr.detach().cpu().numpy())
             # r2_red = PCA(2).fit_transform(teacher_repr.detach().cpu().numpy())
 
-            return dict(am_10=am_10, am_01=am_01, dm_10=dm_10, dm_01=dm_01, r0_am=r0_am, r1_am=r1_am, r0_dm=r0_dm, r1_dm=r1_dm,
+            return dict(am_10=am_10, am_01=am_01, dm_10=dm_10, dm_01=dm_01, r0_am=r0_am, r1_am=r1_am, r0_dm=r0_dm,
+                        r1_dm=r1_dm,
                         diff_10=diff_10, diff_01=diff_01)
 
         elif sim_function == 'zp_local_scaling':
@@ -313,7 +352,8 @@ class RDX:
             # axes[1, 0].imshow(diff_01, cmap='bwr', vmin=vmin, vmax=vmax)
             # axes[1, 1].imshow(diff_10, cmap='bwr', vmin=vmin, vmax=vmax)
             # plt.show()
-            return dict(am_10=am_10, am_01=am_01, dm_10=dm_10, dm_01=dm_01, r0_am=r0_am, r1_am=r1_am, r0_dm=r0_dm, r1_dm=r1_dm,
+            return dict(am_10=am_10, am_01=am_01, dm_10=dm_10, dm_01=dm_01, r0_am=r0_am, r1_am=r1_am, r0_dm=r0_dm,
+                        r1_dm=r1_dm,
                         diff_10=diff_10, diff_01=diff_01)
 
     @staticmethod
@@ -342,7 +382,6 @@ class RDX:
             r0_am = torch.exp(-beta * r0_dm)
 
             return dict(r0_am=r0_am, r1_am=r1_am, r0_dm=r0_dm, r1_dm=r1_dm)
-
 
     @staticmethod
     def cluster_graph(graph_dict, cluster_params):
@@ -461,10 +500,15 @@ class RDX:
         show, save = plot_params.get('show', False), plot_params.get('save', False)
         label_cluster_images = plot_params.get('label_cluster_images', False)
         skip_cluster_viz = plot_params.get('skip_cluster_viz', False)
+        add_predicted_label_to_cluster_images = plot_params.get('add_predicted_label_to_cluster_images', False)
 
         r0_red = input_dict['red0']
         r1_red = input_dict['red1']
+        r0m_red = None
+        r1m_red = None
         dataset_labels = input_dict['dataset_labels']
+        # if add_predicted_label_to_cluster_images:
+        #     preds = input_dict['preds']
         cluster_dict = output_dict['cluster_dict']
         graph_dict = output_dict['graph_dict']
         representations = input_dict['representations']
@@ -481,45 +525,28 @@ class RDX:
         r0_dm = torch.cdist(representations[0], representations[0])
         r1_dm = torch.cdist(representations[1], representations[1])
 
-        ##### GT LABEL FIGURE START #####
-        if mapped_repr:
-            fig, axes = plt.subplots(3, 2, squeeze=False, figsize=(12, 12))
+        if len(dataset_labels.shape) > 1:
+            RDX.gt_multilabel_plot(
+                dict(r0_red=r0_red, r1_red=r1_red, r0m_red=r0m_red, r1m_red=r1m_red, fontsize=fontsize,
+                     mapped_repr=mapped_repr, dataset_labels=dataset_labels, label_names=input_dict['label_names'],
+                     show=show, save=save, viz_output_base_folder=viz_output_base_folder,
+                     ))
         else:
-            fig, axes = plt.subplots(1, 2, squeeze=False)
-            fig.set_size_inches(12, 6)
-        cmap, get_marker, legend_plot = ph.make_large_cmap(len(np.unique(dataset_labels)))
-        for labi, lab in enumerate(np.unique(dataset_labels)):
-            mask = dataset_labels == lab
-            c = cmap([labi] * mask.sum())
-            alpha = 0.5
-            marker = get_marker(labi)
-            axes[0, 0].scatter(r0_red[mask, 0], r0_red[mask, 1], c=c, alpha=alpha, marker=marker, label=f'{lab}')
-            axes[0, 1].scatter(r1_red[mask, 0], r1_red[mask, 1], c=c, alpha=alpha, marker=marker)
-            if mapped_repr:
-                axes[1, 0].scatter(r0m_red[mask, 0], r0m_red[mask, 1], c=c, alpha=alpha, marker=marker)
-                axes[1, 1].scatter(r1_red[mask, 0], r1_red[mask, 1], c=c, alpha=alpha, marker=marker)
-                axes[2, 0].scatter(r0_red[mask, 0], r0_red[mask, 1], c=c, alpha=alpha, marker=marker)
-                axes[2, 1].scatter(r1m_red[mask, 0], r1m_red[mask, 1], c=c, alpha=alpha, marker=marker)
-                axes[1, 0].set_title(f'{"Model 0 Mapped"}', fontsize=fontsize)
-                axes[1, 1].set_title(f'{"Model 1 Mapped"}', fontsize=fontsize)
-
-        axes[0, 0].set_title(f'{"Model 0"}', fontsize=fontsize)
-        axes[0, 1].set_title(f'{"Model 1"}', fontsize=fontsize)
-        axes[0, 0].set_xlabel('PC 1', fontsize=fontsize)
-        axes[0, 0].set_ylabel('PC 2', fontsize=fontsize)
-        axes[0, 1].set_xlabel('PC 1', fontsize=fontsize)
-        axes[0, 1].set_ylabel('PC 2', fontsize=fontsize)
-        if len(np.unique(dataset_labels)) < 35:
-            axes[0, 0].legend()
-        plt.tight_layout()
-        ph.finish_plot(show, save, save_path=f'{viz_output_base_folder}/pca_with_gt_labels.png')
+            RDX.gt_plot(dict(r0_red=r0_red, r1_red=r1_red, r0m_red=r0m_red, r1m_red=r1m_red, fontsize=fontsize,
+                             mapped_repr=mapped_repr, dataset_labels=dataset_labels,
+                             show=show, save=save, viz_output_base_folder=viz_output_base_folder,
+                             ))
 
         names_dirs = [['Model 1', 'Model 0'], ['Model 0', 'Model 1']]
         dirs = ['10', '01']
         if mapped_repr:
             plot_repr = [[r0m_red, r1_red], [r0_red, r1m_red]]
+            preds = [input_dict['preds'][[1, 2], :], input_dict['preds'][[0, 3], :]]
         else:
             plot_repr = [[r0_red, r1_red], [r0_red, r1_red]]
+            if 'preds' in input_dict:
+                preds = [input_dict['preds'][[1, 0], :], input_dict['preds'][[0, 1], :]]
+
         for di, d in enumerate(dirs):
             fig_paths[d] = {}
             viz_output_folder = os.path.join(viz_output_base_folder, d)
@@ -592,7 +619,8 @@ class RDX:
 
             norm = None
             if affinity_mat.abs().max() / affinity_mat.abs().min() > 100:
-                norm = colors.SymLogNorm(linthresh=0.03, linscale=0.03, vmin=affinity_mat.min(), vmax=affinity_mat.max())
+                norm = colors.SymLogNorm(linthresh=0.03, linscale=0.03, vmin=affinity_mat.min(),
+                                         vmax=affinity_mat.max())
             im = axes[1, 2].imshow(affinity_mat[inds][:, inds], cmap='viridis', norm=norm)
             axes[1, 2].set_title('$M_A$')
             fig.colorbar(im, ax=axes[1, 2])
@@ -712,7 +740,18 @@ class RDX:
                     fig, grid = ph.make_image_grid(sel_images, mode=grid_size, axes_pad=axes_pad)
                     if label_cluster_images:
                         for axi, ax in enumerate(grid):
-                            ax.set_title(f'{dataset_labels[sel_inds[axi]]}', fontsize=fontsize)
+                            if len(sel_inds) == axi:
+                                break
+                            if type(dataset_labels[sel_inds[axi]]) is np.ndarray:
+                                ax.set_title(f'{dataset_labels[sel_inds[axi]]}', fontsize=8)
+                            else:
+                                s = ''
+                                if add_predicted_label_to_cluster_images:
+                                    s = (f'M{str(dirs[di])[0]} : {int(preds[di][0][sel_inds[axi]])} | '
+                                         f'M{str(dirs[di])[1]} : {int(preds[di][1][sel_inds[axi]])} | ')
+                                mean_aff = output_dict['graph_dict'][f'am_{d}'][sel_inds][:, sel_inds].mean()
+                                s += f'GT : {dataset_labels[sel_inds[axi]]} | {mean_aff:0.1f}'
+                                ax.set_title(s, fontsize=fontsize)
 
                     # plt.suptitle(f'Cluster {i}', fontsize=fontsize)
                     plt.tight_layout()
@@ -732,13 +771,14 @@ class RDX:
             if not skip_cluster_viz:
                 summ_figs = fig_paths[d]['clusters']
                 if plot_params.get('skip_low_affinity_for_summary', False):
-                    summ_figs = [f for i, f in enumerate(summ_figs) if mean_cluster_affinity[i] > plot_params.get('null_thresh', 0)]
+                    summ_figs = [f for i, f in enumerate(summ_figs) if
+                                 mean_cluster_affinity[i] > plot_params.get('null_thresh', 0)]
                 if add_null_cluster:
                     summ_figs = summ_figs[1:]
 
                 pad_mult = 1
                 if len(summ_figs) != 0 and save:
-                    cl_summ_im = Image.new('RGB', (len(summ_figs) * (summ_size + pad_mult*pad) - (pad_mult-2) * pad,
+                    cl_summ_im = Image.new('RGB', (len(summ_figs) * (summ_size + pad_mult * pad) - (pad_mult - 2) * pad,
                                                    summ_size + 2 * pad),
                                            color=bg_color)
                     start_pos_x = pad
@@ -771,7 +811,8 @@ class RDX:
                 c = cmap(cl_labels[curr_si])
                 alpha = 1
                 marker = get_marker(cli)
-                axes[0, 0].scatter(r0_2d[curr_si, 0], r0_2d[curr_si, 1], c=c, alpha=alpha, marker=marker, label=f'{cli}')
+                axes[0, 0].scatter(r0_2d[curr_si, 0], r0_2d[curr_si, 1], c=c, alpha=alpha, marker=marker,
+                                   label=f'{cli}')
                 axes[0, 1].scatter(r1_2d[curr_si, 0], r1_2d[curr_si, 1], c=c, alpha=alpha, marker=marker)
 
             axes[0, 0].set_title(f'{names_dirs[1][0]}', fontsize=fontsize)
@@ -790,3 +831,88 @@ class RDX:
             ##### SELECTED INDICES FIGURE END #####
 
         return fig_paths
+
+    @staticmethod
+    def gt_plot(inputs):
+        r0_red, r1_red = inputs['r0_red'], inputs['r1_red']
+        mapped_repr, dataset_labels = inputs['mapped_repr'], inputs['dataset_labels']
+        show, save, viz_output_base_folder = inputs['show'], inputs['save'], inputs['viz_output_base_folder']
+        ##### GT LABEL FIGURE START #####
+        if mapped_repr:
+            fig, axes = plt.subplots(3, 2, squeeze=False, figsize=(12, 12))
+            r0m_red, r1m_red = inputs['r0m_red'], inputs['r1m_red']
+        else:
+            fig, axes = plt.subplots(1, 2, squeeze=False)
+            fig.set_size_inches(12, 6)
+        fontsize = inputs['fontsize']
+        cmap, get_marker, legend_plot = ph.make_large_cmap(len(np.unique(dataset_labels)))
+        for labi, lab in enumerate(np.unique(dataset_labels)):
+            mask = dataset_labels == lab
+            c = cmap([labi] * mask.sum())
+            alpha = 0.5
+            marker = get_marker(labi)
+            axes[0, 0].scatter(r0_red[mask, 0], r0_red[mask, 1], c=c, alpha=alpha, marker=marker, label=f'{lab}')
+            axes[0, 1].scatter(r1_red[mask, 0], r1_red[mask, 1], c=c, alpha=alpha, marker=marker)
+            if mapped_repr:
+                axes[1, 0].scatter(r0m_red[mask, 0], r0m_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                axes[1, 1].scatter(r1_red[mask, 0], r1_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                axes[2, 0].scatter(r0_red[mask, 0], r0_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                axes[2, 1].scatter(r1m_red[mask, 0], r1m_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                axes[1, 0].set_title(f'{"Model 0 Mapped"}', fontsize=fontsize)
+                axes[1, 1].set_title(f'{"Model 1 Mapped"}', fontsize=fontsize)
+
+        axes[0, 0].set_title(f'{"Model 0"}', fontsize=fontsize)
+        axes[0, 1].set_title(f'{"Model 1"}', fontsize=fontsize)
+        axes[0, 0].set_xlabel('PC 1', fontsize=fontsize)
+        axes[0, 0].set_ylabel('PC 2', fontsize=fontsize)
+        axes[0, 1].set_xlabel('PC 1', fontsize=fontsize)
+        axes[0, 1].set_ylabel('PC 2', fontsize=fontsize)
+        if len(np.unique(dataset_labels)) < 35:
+            axes[0, 0].legend()
+        plt.tight_layout()
+        ph.finish_plot(show, save, save_path=f'{viz_output_base_folder}/twodviz_with_gt_labels.png')
+
+    @staticmethod
+    def gt_multilabel_plot(inputs):
+        r0_red, r1_red = inputs['r0_red'], inputs['r1_red']
+        mapped_repr, dataset_labels, label_names = inputs['mapped_repr'], inputs['dataset_labels'], inputs[
+            'label_names']
+        show, save, viz_output_base_folder = inputs['show'], inputs['save'], inputs['viz_output_base_folder']
+        os.makedirs(os.path.join(viz_output_base_folder, 'gt_plots'), exist_ok=True)
+        for i in range(dataset_labels.shape[1]):
+            dset_labels = dataset_labels[:, i]
+            ##### GT LABEL FIGURE START #####
+            if mapped_repr:
+                fig, axes = plt.subplots(3, 2, squeeze=False, figsize=(12, 12))
+                r0m_red, r1m_red = inputs['r0m_red'], inputs['r1m_red']
+            else:
+                fig, axes = plt.subplots(1, 2, squeeze=False)
+                fig.set_size_inches(12, 6)
+            fontsize = inputs['fontsize']
+            cmap, get_marker, legend_plot = ph.make_large_cmap(len(np.unique(dataset_labels)))
+            for labi, lab in enumerate(np.unique(dset_labels)):
+                mask = dset_labels == lab
+                c = cmap([labi] * mask.sum())
+                alpha = 0.5
+                marker = get_marker(labi)
+                axes[0, 0].scatter(r0_red[mask, 0], r0_red[mask, 1], c=c, alpha=alpha, marker=marker, label=f'{lab}')
+                axes[0, 1].scatter(r1_red[mask, 0], r1_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                if mapped_repr:
+                    axes[1, 0].scatter(r0m_red[mask, 0], r0m_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                    axes[1, 1].scatter(r1_red[mask, 0], r1_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                    axes[2, 0].scatter(r0_red[mask, 0], r0_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                    axes[2, 1].scatter(r1m_red[mask, 0], r1m_red[mask, 1], c=c, alpha=alpha, marker=marker)
+                    axes[1, 0].set_title(f'{"Model 0 Mapped"}', fontsize=fontsize)
+                    axes[1, 1].set_title(f'{"Model 1 Mapped"}', fontsize=fontsize)
+
+            axes[0, 0].set_title(f'{"Model 0"}', fontsize=fontsize)
+            axes[0, 1].set_title(f'{"Model 1"}', fontsize=fontsize)
+            axes[0, 0].set_xlabel('PC 1', fontsize=fontsize)
+            axes[0, 0].set_ylabel('PC 2', fontsize=fontsize)
+            axes[0, 1].set_xlabel('PC 1', fontsize=fontsize)
+            axes[0, 1].set_ylabel('PC 2', fontsize=fontsize)
+            if len(np.unique(dataset_labels)) < 35:
+                axes[0, 0].legend()
+            plt.tight_layout()
+            ph.finish_plot(show, save,
+                           save_path=f'{os.path.join(viz_output_base_folder, "gt_plots")}/label_{label_names[i]}_gt_plot.png')

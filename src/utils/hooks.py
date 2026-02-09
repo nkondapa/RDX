@@ -71,6 +71,11 @@ class ActivationHookV2:
             # only moves if needed (according to move_to_cpu_every param)
             self.move_to_cpu(layer_name)
 
+            # mem = 0
+            # for layer in self.layer_activations.keys():
+            #     mem += self.layer_activations[layer_name][0].element_size() * self.layer_activations[layer_name][
+            #         0].nelement()
+
         return hook_fn
 
     def move_to_cpu(self, layer_name, finish=False):

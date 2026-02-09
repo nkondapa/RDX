@@ -438,6 +438,7 @@ def get_image_group(image_group_strategy, config, igs_params=None, return_datase
             'shuffle_train': False,
             'shuffle_test': False,
             'get_part_map': False,
+            'only_keep_label_index': config.get('only_keep_label_index', None),
 
             'transform_params': {
                 'dataset_name': config['dataset_name'],

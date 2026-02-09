@@ -8,6 +8,8 @@ from datasets.funny_birds import FunnyBirds
 from datasets.butterflies import ButterfliesDataset
 from datasets.mnist import MNISTDataset
 from datasets.inatdl import INatDL
+from datasets.maia2 import Maia2ReprDataset
+from datasets.chestdr import ChestDRDataset
 from datasets import derma_data
 from datasets import cub
 import numpy as np
@@ -62,7 +64,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
 
-    if dataset_name == 'nabirds_modified':
+    elif dataset_name == 'nabirds_modified':
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -100,7 +102,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
 
-    if dataset_name == 'imagenet':
+    elif dataset_name == 'imagenet':
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -138,7 +140,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
 
-    if dataset_name == 'stanford_cars':
+    elif dataset_name == 'stanford_cars':
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -174,7 +176,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
     
-    if dataset_name == 'funny_birds' or dataset_name == 'funny_birds_hc':
+    elif dataset_name == 'funny_birds' or dataset_name == 'funny_birds_hc':
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -204,7 +206,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
 
-    if dataset_name == 'chinese_chars':
+    elif dataset_name == 'chinese_chars':
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -236,7 +238,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
 
-    if dataset_name == 'butterflies' or dataset_name.split('_')[0] == 'butterflies':
+    elif dataset_name == 'butterflies' or dataset_name.split('_')[0] == 'butterflies':
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -277,7 +279,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
 
-    if 'mnist' in dataset_name:
+    elif 'mnist' in dataset_name:
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -324,7 +326,7 @@ def get_dataset(params):
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
 
-    if dataset_name == "ham10000":
+    elif dataset_name == "ham10000":
         transform_dict = get_transform(params['transform_params'])
         transform = transform_dict['transform']
         test_transform = transform_dict['test_transform']
@@ -391,7 +393,7 @@ def get_dataset(params):
                     classes=classes, test_transform=test_loader.dataset.transform,
                     transform=train_loader.dataset.transform, preprocessing=None)
 
-    if dataset_name == 'inatdl':
+    elif dataset_name == 'inatdl':
         data_root = params['data_root']
         batch_size = params['batch_size']
         num_workers = params['num_workers']
@@ -423,6 +425,15 @@ def get_dataset(params):
                     train_dataset=train_dataset, test_dataset=test_dataset, dataset=dataset,
                     num_classes=num_classes, test_transform=test_transform,
                     transform=transform, preprocessing=preprocessing)
+
+    elif dataset_name == "maia2_elo_level_repr_dset":
+        dset = Maia2ReprDataset(root=params['data_root'])
+        return dict(test_dataset=dset, dataset=dset,)
+    elif dataset_name == "chestdr":
+        dset = ChestDRDataset(root=params['data_root'], label_index=params.get('only_keep_label_index', None))
+        return dict(test_dataset=dset, dataset=dset,)
+    else:
+        raise ValueError(f'Unknown dataset_name: {dataset_name}')
 
 def get_triplet_dataset(params):
     dataset_name = params['dataset_name']
