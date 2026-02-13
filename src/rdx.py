@@ -1,6 +1,6 @@
 import torch
 from sklearn.decomposition import PCA
-from sklearn.cluster import SpectralClustering, AffinityPropagation
+from sklearn.cluster import SpectralClustering, AffinityPropagation, HDBSCAN
 from scipy.sparse import linalg as sparse_linalg
 import scipy as sp
 import os
@@ -11,6 +11,7 @@ from matplotlib import colors
 from PIL import Image
 import torchvision
 from src.cka import CudaCKA
+import leidenalg
 
 
 class RDX:
@@ -189,8 +190,10 @@ class RDX:
                 diff_10 = diff_10 / diff_10.abs().max()
                 diff_01 = diff_01 / diff_01.abs().max()
 
-            am_10 = dm_01 = torch.exp(-beta * diff_10)
-            am_01 = dm_10 = torch.exp(-beta * diff_01)
+            am_10 = torch.exp(-beta * diff_10)
+            am_01 = torch.exp(-beta * diff_01)
+            dm_10 = torch.exp(beta * diff_10)
+            dm_01 = torch.exp(beta * diff_01)
 
             # affinity_mat = am_10
             # r1_red = PCA(2).fit_transform(student_repr.detach().cpu().numpy())
@@ -240,9 +243,10 @@ class RDX:
                 diff_10 = diff_10 / diff_10.abs().max()
                 diff_01 = diff_01 / diff_01.abs().max()
 
-            am_10 = dm_01 = torch.exp(-beta * diff_10)
-            am_01 = dm_10 = torch.exp(-beta * diff_01)
-
+            am_10 = torch.exp(-beta * diff_10)
+            am_01 = torch.exp(-beta * diff_01)
+            dm_10 = torch.exp(beta * diff_10)
+            dm_01 = torch.exp(beta * diff_01)
             if params['classifier_guided']:
                 preds = params['preds']
                 ams = [r0_am, r1_am]
@@ -390,27 +394,42 @@ class RDX:
         n_clusters = cluster_params.get('n_clusters', 10)
         output_dict = {}
         # clusters should be generated in both directions
-        graph_keys = ['am_10', 'am_01']
+        graph_keys = ['10', '01']
         for graph_key in graph_keys:
             output_dict[graph_key] = {}
             if method == 'spectral':
+                gk = 'am_' + graph_key
                 cluster = SpectralClustering(n_clusters=n_clusters + int(add_null_cluster), affinity='precomputed')
-                am = graph_dict[graph_key]
+                am = graph_dict[gk]
                 cluster.fit((am + am.T) / 2)
-                RDX.post_process(cluster, graph_dict[graph_key])
+                RDX.post_process(cluster, graph_dict[gk])
                 output_dict[graph_key]['cluster_labels'] = cluster.labels_
 
+            elif method == 'leiden':
+                raise NotImplementedError('Leiden clustering does not work currently')
+                # TODO fix leiden clustering
+                gk = 'diff_' + graph_key
+                import igraph as ig
+                am = graph_dict[gk]
+                G = ig.Graph.Weighted_Adjacency((-graph_dict['diff_10']).numpy().tolist(), mode=ig.ADJ_DIRECTED, attr="weight")
+                partition = leidenalg.find_partition(G, leidenalg.CPMVertexPartition, resolution_parameter=0.99)
+                output_dict[graph_key]['cluster_labels'] = np.array(partition.membership)
+                print(output_dict[graph_key]['cluster_labels'],
+                      np.unique(output_dict[graph_key]['cluster_labels'], return_counts=True))
+
             elif method == 'affinity':
+                gk = 'am_' + graph_key
                 cluster = AffinityPropagation()
-                am = graph_dict[graph_key]
+                am = graph_dict[gk]
                 cluster.fit((am + am.T) / 2)
                 output_dict[graph_key]['cluster_labels'] = cluster.labels_
 
             elif method == 'eig_centrality':
+                gk = 'am_' + graph_key
                 # eig_centrality to pick central points for "interesting" neighborhoods
                 import networkx
                 cluster_size = cluster_params.get("cluster_size", 9)
-                am = graph_dict[graph_key]
+                am = graph_dict[gk]
                 G = networkx.from_numpy_array(am.numpy())
                 eig_centrality = networkx.eigenvector_centrality_numpy(G, weight="weight")
                 arr = np.array(list(eig_centrality.values()))
@@ -434,9 +453,10 @@ class RDX:
                 output_dict[graph_key]['cluster_labels'] = cluster_labels
 
             elif method == 'pagerank':
+                gk = 'am_' + graph_key
                 import networkx
                 cluster_size = cluster_params.get("cluster_size", 9)
-                am = graph_dict[graph_key]
+                am = graph_dict[gk]
                 G = networkx.from_numpy_array(am.numpy())
                 pagerank_out = networkx.pagerank(G, weight="weight")
                 arr = np.array(list(pagerank_out.values()))
@@ -553,7 +573,7 @@ class RDX:
             os.makedirs(viz_output_folder, exist_ok=True)
             n0, n1 = names_dirs[di]
 
-            cl_labels = cluster_dict[f'am_{d}']['cluster_labels']
+            cl_labels = cluster_dict[f'{d}']['cluster_labels']
             affinity_mat = graph_dict[f'am_{d}']
             diff_mat = graph_dict[f'diff_{d}']
 
@@ -646,6 +666,93 @@ class RDX:
 
             ##### OVERVIEW FIGURE END #####
 
+            ##### OVERVIEW EXCLUDE 0 FIGURE START #####
+            fig, axes = plt.subplots(2, 3)
+            fig.set_size_inches(18, 12)
+            r0_2d, r1_2d = plot_repr[di]
+            mean_cluster_affinity = []
+            for cli in np.unique(cl_labels):
+                if cli == 0:
+                    continue
+                mask = cl_labels == cli
+                mean_affinity = affinity_mat[mask][:, mask].mean().item()
+                if cli == 0 and mean_affinity < plot_params.get('null_thresh', 0):
+                    c = np.zeros((mask.sum(), 4)) + 0.5
+                    alpha = 0.2
+                else:
+                    c = cmap(cl_labels[mask])
+                    alpha = 1
+                mean_cluster_affinity.append(mean_affinity)
+                marker = get_marker(cli)
+                axes[0, 0].scatter(r0_2d[mask, 0], r0_2d[mask, 1], c=c, alpha=alpha, marker=marker, label=f'{cli}')
+                axes[1, 0].scatter(r1_2d[mask, 0], r1_2d[mask, 1], c=c, alpha=alpha, marker=marker)
+
+            axes[0, 0].set_title(f'{names_dirs[1][0]}', fontsize=fontsize)
+            axes[1, 0].set_title(f'{names_dirs[1][1]}', fontsize=fontsize)
+            axes[0, 0].set_xlabel('PC 1', fontsize=fontsize)
+            axes[0, 0].set_ylabel('PC 2', fontsize=fontsize)
+            axes[0, 1].set_xlabel('PC 1', fontsize=fontsize)
+            axes[0, 1].set_ylabel('PC 2', fontsize=fontsize)
+            if len(np.unique(cl_labels)) < 35:
+                axes[0, 0].legend()
+
+            inds = []
+            breaks = []
+            # cl_dists = {}
+            cl_affins = {}
+            cl_diffs = {}
+            cl_inds = {}
+            for cli in np.unique(cl_labels):
+                if cli == 0:
+                    continue
+                _cl_inds = np.where(cl_labels == cli)[0]
+                inds.extend(_cl_inds)
+                cl_inds[cli] = _cl_inds
+                breaks.append(len(inds))
+                cl_diffs[cli] = diff_mat[_cl_inds][:, _cl_inds]
+                cl_affins[cli] = affinity_mat[_cl_inds][:, _cl_inds]
+                # cl_dists[cli] = rn_dist_mat[_cl_inds][:, _cl_inds]
+
+            inds = np.array(inds)
+            axes[0, 1].imshow(r0_dm[inds][:, inds])
+            axes[0, 1].set_title(f'{names_dirs[1][0]} Distance Matrix', fontsize=fontsize)
+            axes[1, 1].imshow(r1_dm[inds][:, inds])
+            axes[1, 1].set_title(f'{names_dirs[1][1]} Distance Matrix', fontsize=fontsize)
+
+            diff_mat_min, diff_mat_max = diff_mat.min(), diff_mat.max()
+            im = axes[0, 2].imshow(diff_mat[inds][:, inds], cmap='bwr', vmin=diff_mat_min, vmax=diff_mat_max)
+            axes[0, 2].set_title(f'{n0} - {n1} Difference Matrix')
+            fig.colorbar(im, ax=axes[0, 2])
+
+            norm = None
+            if affinity_mat.abs().max() / affinity_mat.abs().min() > 100:
+                norm = colors.SymLogNorm(linthresh=0.03, linscale=0.03, vmin=affinity_mat.min(),
+                                         vmax=affinity_mat.max())
+            im = axes[1, 2].imshow(affinity_mat[inds][:, inds], cmap='viridis', norm=norm)
+            axes[1, 2].set_title('$M_A$')
+            fig.colorbar(im, ax=axes[1, 2])
+
+            axes_w_clus_bound = [axes[0, 1], axes[1, 1], axes[0, 2], axes[1, 2]]
+            for bi, b in enumerate(breaks):
+                b = b - 0.5
+                prev = breaks[bi - 1] if bi > 0 else 0
+                for ax in axes_w_clus_bound:
+                    ax.plot([prev, b], [prev, prev], color='m')
+                    ax.plot([prev, b], [b, b], color='m')
+                    ax.plot([prev, prev], [prev, b], color='m')
+                    ax.plot([b, b], [prev, b], color='m')
+                # axes[1, 1].plot([prev, b], [prev, prev], color='m')
+                # axes[1, 1].plot([prev, b], [b, b], color='m')
+                # axes[1, 1].plot([prev, prev], [prev, b], color='m')
+                # axes[1, 1].plot([b, b], [prev, b], color='m')
+                plt.tight_layout()
+
+            ph.finish_plot(show, save, save_path=f'{viz_output_folder}/overview_no_zero.png')
+            if save:
+                fig_paths[d]['overview'] = f'{viz_output_folder}/overview_no_zero.png'
+
+            ##### OVERVIEW EXCLUDE 0 FIGURE END #####
+
             ##### CLUSTER FIGURE START #####
             # subsample from cluster to generate grids
             grid_size = plot_params.get('grid_size', '4x4')
@@ -699,11 +806,20 @@ class RDX:
                         nsums = torch.stack(nsums)
                         nb_ind = torch.argmax(nsums)
                         sel_inds = cl_inds[neighborhoods[nb_ind]]
-                    # cl_affin_argsort = cl_affin.argsort(dim=1, descending=True)
-                    # cl_affin_neighborhood_sum = torch.gather(cl_affin, dim=1, index=cl_affin_argsort[:, :num_samples]).sum(1)
-                    # cl_anch = cl_affin_neighborhood_sum.argmax()
-                    # sel_inds = cl_inds[cl_affin_argsort[cl_anch, :(num_samples - 1)]]
-                    # sel_inds = np.concatenate(([cl_inds[cl_anch]], sel_inds))
+                elif cluster_sample_strategy == 'maximize_total_euc_neighborhood_affinity':
+                    cl_inds = np.where(mask)[0] # choices for neighborhood centers
+                    curr_repr, rdist = (representations[1], r1_dm) if d == '10' else (representations[0], r0_dm)
+                    if num_items <= 1:
+                        sel_inds = cl_inds
+                    else:
+                        neighborhoods = torch.topk(rdist, num_samples, dim=1, largest=False)[1]
+                        nsums = []
+                        for cl_ind in cl_inds:
+                            nsums.append(affinity_mat[neighborhoods[cl_ind]][:, neighborhoods[cl_ind]].sum())
+                        nsums = torch.stack(nsums)
+                        nb_ind = torch.argmax(nsums)
+                        sel_inds = neighborhoods[cl_inds[nb_ind]]
+                    print('Sel Ind mean aff: ', affinity_mat[sel_inds][:, sel_inds].mean(), len(sel_inds))
 
                 elif cluster_sample_strategy == 'spectral_centrality':
                     cl_inds = np.where(mask)[0]
