@@ -74,11 +74,13 @@ def make_image_grid(sel_images, mode='3x3', axes_pad=0.25):
 
 
 def finish_plot(show, save, save_path=None, fig=None):
-    if save:
+    if save is not None and save_path is not None:
         if fig is None:
             plt.savefig(save_path)
         else:
             fig.savefig(save_path)
+    else:
+        print('Not saving figure since save or save_path is None')
 
     if show:
         plt.show()

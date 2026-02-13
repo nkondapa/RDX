@@ -578,7 +578,7 @@ def activation_patching(visual, train_ds, args, force_run=False):
     save = True
     fig_output_dir = os.path.join(args.output_dir, 'fig_outputs')
     measure_cluster_properties(rdx_params, data, probe_results, labels, probe_method=probe_method,
-                               output_dir=fig_output_dir, show=show, save=save)
+                               fig_output_dir=fig_output_dir, show=show, save=save)
 
     dist1 = torch.cdist(acts['trunk.blocks.0'], acts['trunk.blocks.0']).argsort(-1).argsort(-1)
     dist2 = torch.cdist(acts['trunk.blocks.1'], acts['trunk.blocks.1']).argsort(-1).argsort(-1)
