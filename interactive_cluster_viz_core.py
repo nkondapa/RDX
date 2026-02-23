@@ -652,14 +652,6 @@ function highlightMatrixGroup(groupKey, indices) {
     var pair = LAYER_PAIRS[parseInt(document.getElementById('layer-pair-select').value)];
     var dir = getDirection();
 
-    // Single scatter mode (generate_html)
-    var sp = document.getElementById('scatter-plot');
-    if (sp && sp.data) {
-        var ln = dir === '10' ? pair.ln2 : pair.ln1;
-        _updateMHL('scatter-plot', EMBEDDINGS[ln], indices);
-        return;
-    }
-
     // Transition mode
     var ep = getEndpoints(pair, dir);
     _updateMHL('scatter-pre', EMBEDDINGS[ep.startLn], indices);
@@ -805,519 +797,8 @@ function showMatrixAnalysis(imgIdx) {
 """
 
 
+
 def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbnails, labels,
-                   output_path, ui_config=None, matrix_data=None, ranking_data=None):
-    """Generate self-contained interactive HTML file."""
-    print('Generating HTML...')
-
-    # Defaults
-    c = {
-        # -- Layout --
-        'body_margin': 16,
-        'panel_gap': 16,
-        'panel_padding': 16,
-        'panel_radius': 10,
-        'left_flex': 3,
-        'left_min_width': 600,
-        'right_flex': 2,
-        'right_min_width': 500,
-        'controls_gap': 24,
-        'controls_margin_bottom': 14,
-        # -- Fonts --
-        'font_controls': 16,
-        'font_select': 15,
-        'font_h2': 22,
-        'font_h3': 17,
-        'font_legend': 14,
-        'font_info': 15,
-        'font_idx_label': 10,
-        'font_placeholder': 16,
-        'font_plot_axis_title': 16,
-        'font_plot_tick': 13,
-        'font_plot_general': 14,
-        'font_plot_legend': 13,
-        # -- Images --
-        'thumb_display_size': 96,
-        'thumb_border_width': 4,
-        'thumb_grid_gap': 6,
-        'clicked_img_size': 180,
-        'clicked_img_border': 4,
-        # -- Modal (click-to-enlarge) --
-        'modal_img_size': 400,          # px — enlarged image size in modal
-        'modal_border': 3,
-        'modal_font_size': 16,
-        # -- Scatter --
-        'marker_null_size': 6,
-        'marker_null_opacity': 0.3,
-        'marker_cluster_size': 10,
-        'marker_cluster_opacity': 0.8,
-        'scatter_min_height': 600,
-        'scatter_height_offset': 160,
-        # -- Legend --
-        'legend_gap': 12,
-        'legend_swatch': 18,
-        # -- Radio --
-        'radio_size': 16,
-        # -- Neighbor panel --
-        'show_post_spatial_nn': True,
-        'K': 8,
-        # -- Mode --
-        'comparison_mode': 'cross_model',
-    }
-    if ui_config is not None:
-        c.update(ui_config)
-
-    # Prepare layer pair options (label set dynamically by JS)
-    layer_pairs = []
-    for i in range(len(layer_names) - 1):
-        ln1, ln2 = layer_names[i], layer_names[i + 1]
-        if (ln1, ln2) in rdx_data:
-            layer_pairs.append({'ln1': ln1, 'ln2': ln2, 'label': f'{ln1} vs. {ln2}'})
-
-    # Prepare embedding data per layer
-    embedding_data = {}
-    for i, ln in enumerate(layer_names):
-        embedding_data[ln] = {
-            'x': embeddings[i][:, 0].tolist(),
-            'y': embeddings[i][:, 1].tolist(),
-        }
-
-    # Prepare cluster label data per layer pair and direction
-    cluster_data = {}
-    for pair in layer_pairs:
-        key = (pair['ln1'], pair['ln2'])
-        pair_key = f"{pair['ln1']}||{pair['ln2']}"
-        cluster_data[pair_key] = {}
-        for direction in ['10', '01']:
-            cl_labels = rdx_data[key]['cluster_dict'][direction]['cluster_labels']
-            cluster_data[pair_key][direction] = cl_labels.tolist()
-
-    labels_list = labels.tolist() if hasattr(labels, 'tolist') else list(labels)
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Interactive RDX Cluster Visualization</title>
-<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-<style>
-body {{ font-family: Arial, sans-serif; margin: {c['body_margin']}px; background: #1a1a2e; color: #e0e0e0; }}
-.container {{ display: flex; height: calc(100vh - {c['body_margin'] * 2 + 68}px); }}
-.panel {{ background: #16213e; border-radius: {c['panel_radius']}px; padding: {c['panel_padding']}px; }}
-#left-panel {{ flex: {c['left_flex']}; min-width: {c['left_min_width']}px; }}
-#right-panel {{ flex: {c['right_flex']}; min-width: {c['right_min_width']}px; overflow-y: auto; }}
-.splitter {{ width: 6px; cursor: col-resize; background: #2a2a4a; border-radius: 3px;
-    margin: 0 {c['panel_gap'] // 2}px; flex-shrink: 0; transition: background 0.15s; }}
-.splitter:hover, .splitter.active {{ background: #e94560; }}
-.controls {{ display: flex; gap: {c['controls_gap']}px; align-items: center; margin-bottom: {c['controls_margin_bottom']}px; flex-wrap: wrap; }}
-.controls label {{ font-weight: bold; font-size: {c['font_controls']}px; }}
-.controls select {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483;
-    padding: 6px 12px; border-radius: 5px; font-size: {c['font_select']}px; }}
-.controls input[type="radio"] {{ width: {c['radio_size']}px; height: {c['radio_size']}px; margin: 0 4px; }}
-.img-group {{ margin: 14px 0; }}
-.img-group h3 {{ margin: 6px 0; font-size: {c['font_h3']}px; }}
-.img-grid {{ display: flex; flex-wrap: wrap; gap: {c['thumb_grid_gap']}px; }}
-.img-cell {{ position: relative; cursor: pointer; }}
-.img-cell img {{ display: block; }}
-.img-cell .border-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    box-sizing: border-box; pointer-events: none; }}
-.img-cell .idx-label {{ position: absolute; bottom: 0; right: 0; font-size: {c['font_idx_label']}px;
-    background: rgba(0,0,0,0.7); color: #fff; padding: 2px 4px; }}
-.clicked-img {{ text-align: center; margin-bottom: 14px; }}
-.clicked-img img {{ width: {c['clicked_img_size']}px; height: {c['clicked_img_size']}px; border: {c['clicked_img_border']}px solid #e94560; }}
-.clicked-img .info {{ font-size: {c['font_info']}px; margin-top: 6px; }}
-.legend {{ display: flex; flex-wrap: wrap; gap: {c['legend_gap']}px; margin: 10px 0; font-size: {c['font_legend']}px; }}
-.img-modal-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; cursor: pointer; }}
-.img-modal-overlay.active {{ display: flex; }}
-.img-modal-overlay img {{ width: {c['modal_img_size']}px; height: {c['modal_img_size']}px; image-rendering: pixelated; border: {c['modal_border']}px solid #e0e0e0; border-radius: 6px; }}
-.img-modal-overlay .modal-label {{ position: absolute; bottom: 10%; color: #fff; font-size: {c['modal_font_size']}px;
-    background: rgba(0,0,0,0.7); padding: 6px 14px; border-radius: 4px; }}
-.legend-item {{ display: flex; align-items: center; gap: 5px; }}
-.legend-swatch {{ width: {c['legend_swatch']}px; height: {c['legend_swatch']}px; border-radius: 3px; }}
-h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
-#right-placeholder {{ color: #888; text-align: center; padding: 60px; font-style: italic; font-size: {c['font_placeholder']}px; }}
-.tab-bar {{ display: flex; gap: 4px; margin-bottom: 10px; }}
-.tab-btn {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483; padding: 8px 18px;
-    border-radius: 6px 6px 0 0; cursor: pointer; font-size: {c['font_select']}px; font-weight: bold; }}
-.tab-btn.active {{ background: #533483; border-bottom-color: #16213e; }}
-#ranking-bar {{ display: flex; align-items: center; gap: 8px; padding: 6px 0; margin-bottom: 6px;
-    border-bottom: 1px solid #2a2a4a; }}
-#ranking-bar input[type="range"] {{ flex: 1; height: 5px; cursor: pointer; accent-color: #e94560; }}
-.rank-step-btn {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483; width: 28px; height: 28px;
-    border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center;
-    padding: 0; }}
-.rank-step-btn:hover {{ background: #533483; }}
-#rank-label {{ font-size: {c['font_idx_label'] + 2}px; color: #aaa; white-space: nowrap; }}
-.matrix-group {{ margin: 14px 0; }}
-.matrix-group h3 {{ margin: 6px 0; font-size: {c['font_h3']}px; }}
-.matrix-row {{ display: flex; flex-wrap: wrap; gap: 4px; align-items: flex-end; margin: 4px 0; }}
-.matrix-cell {{ display: flex; flex-direction: column; align-items: center; gap: 2px; }}
-.matrix-cell img {{ display: block; border-radius: 3px; }}
-.matrix-val {{ width: 48px; height: 18px; border-radius: 3px; display: flex; align-items: center;
-    justify-content: center; font-size: 10px; font-weight: bold; }}
-.matrix-label {{ font-size: 11px; color: #aaa; margin: 4px 0 2px 0; font-style: italic; }}
-.matrix-highlight-btn {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483; padding: 3px 10px;
-    border-radius: 4px; cursor: pointer; font-size: 11px; margin-left: 8px; vertical-align: middle; }}
-.matrix-highlight-btn:hover {{ background: #533483; }}
-.matrix-highlight-btn.active {{ background: #e9b450; color: #1a1a2e; border-color: #e9b450; }}
-</style>
-</head>
-<body>
-
-<div class="controls">
-    <label>Layer Pair:
-        <select id="layer-pair-select"></select>
-    </label>
-    <label>Direction:
-        <input type="radio" name="direction" value="10" checked> <span id="dir-10-label"></span>
-        <input type="radio" name="direction" value="01"> <span id="dir-01-label"></span>
-    </label>
-</div>
-
-<div class="container">
-    <div class="panel" id="left-panel">
-        <h2>AlignedUMAP Scatter</h2>
-        <div id="scatter-plot"></div>
-    </div>
-    <div class="splitter" id="splitter"></div>
-    <div class="panel" id="right-panel">
-        <div class="tab-bar">
-            <button class="tab-btn active" data-tab="matrix" onclick="switchTab('matrix')">Matrix View</button>
-            <button class="tab-btn" data-tab="neighbor" onclick="switchTab('neighbor')">Neighbors</button>
-        </div>
-        <div id="ranking-bar">
-            <button class="rank-step-btn" onclick="stepRank(-1)">&#9664;</button>
-            <input type="range" id="rank-slider" min="0" max="0" value="0">
-            <button class="rank-step-btn" onclick="stepRank(1)">&#9654;</button>
-            <span id="rank-label"></span>
-        </div>
-        <div id="right-content">
-            <div id="right-placeholder">Click a colored cluster point to see analysis</div>
-        </div>
-    </div>
-</div>
-
-<div id="img-modal" class="img-modal-overlay" onclick="closeModal()">
-    <img src="" onclick="event.stopPropagation()">
-    <div class="modal-label"></div>
-</div>
-
-<script>
-const THUMBNAILS = {json.dumps(thumbnails)};
-const EMBEDDINGS = {json.dumps(embedding_data)};
-const CLUSTER_DATA = {json.dumps(cluster_data)};
-const NEIGHBOR_DATA = {json.dumps(neighbor_data)};
-const MATRIX_DATA = {json.dumps(matrix_data or {})};
-const RANKING_DATA = {json.dumps(ranking_data or {})};
-const LABELS = {json.dumps(labels_list)};
-const LAYER_PAIRS = {json.dumps(layer_pairs)};
-const UI = {json.dumps(c)};
-
-const CLUSTER_COLORS = ['#888888', '#e94560', '#0f3460', '#533483', '#e9b450', '#16c79a'];
-
-let activeTab = 'matrix';
-let lastClickedIdx = null;
-
-""" + _LABELS_JS + f"""
-
-// Populate dropdown
-const select = document.getElementById('layer-pair-select');
-LAYER_PAIRS.forEach((p, i) => {{
-    const opt = document.createElement('option');
-    opt.value = i;
-    opt.textContent = L(p).pairLabel;
-    select.appendChild(opt);
-}});
-
-function getPairKey() {{
-    const idx = parseInt(select.value);
-    const p = LAYER_PAIRS[idx];
-    return p.ln1 + '||' + p.ln2;
-}}
-
-function getDirection() {{
-    return document.querySelector('input[name="direction"]:checked').value;
-}}
-
-function switchTab(tab) {{
-    activeTab = tab;
-    document.querySelectorAll('.tab-btn').forEach(b => {{
-        b.classList.toggle('active', b.dataset.tab === tab);
-    }});
-    if (tab === 'neighbor') clearMatrixHighlight();
-    if (lastClickedIdx !== null) {{
-        if (tab === 'neighbor') showNeighborAnalysis(lastClickedIdx);
-        else showMatrixAnalysis(lastClickedIdx);
-    }}
-}}
-
-function imgTag(idx, borderColor) {{
-    const size = UI.thumb_display_size;
-    const bw = UI.thumb_border_width;
-    return `<div class="img-cell" onclick="openModal(this, ${{idx}})">` +
-        `<img src="data:image/jpeg;base64,${{THUMBNAILS[idx]}}" width="${{size}}" height="${{size}}">` +
-        `<div class="border-overlay" style="border: ${{bw}}px solid ${{borderColor}};"></div>` +
-        `<div class="idx-label">${{idx}}</div></div>`;
-}}
-
-// -- Image modal (click-to-enlarge + arrow key navigation) --
-let modalCells = [];
-let modalCellIdx = -1;
-
-function openModal(cell, imgIdx) {{
-    const grid = cell.closest('.img-grid');
-    const matrixGroup = cell.closest('.matrix-group');
-    if (grid) {{
-        modalCells = Array.from(grid.querySelectorAll('.img-cell'));
-        modalCellIdx = modalCells.indexOf(cell);
-    }} else if (matrixGroup) {{
-        modalCells = Array.from(matrixGroup.querySelectorAll('.matrix-cell'));
-        modalCellIdx = modalCells.indexOf(cell);
-    }} else {{
-        modalCells = [cell];
-        modalCellIdx = 0;
-    }}
-    showModalImage(imgIdx);
-}}
-
-function showModalImage(imgIdx) {{
-    const overlay = document.getElementById('img-modal');
-    overlay.querySelector('img').src = 'data:image/jpeg;base64,' + THUMBNAILS[imgIdx];
-    overlay.querySelector('.modal-label').textContent = 'Image #' + imgIdx + ' | Label: ' + LABELS[imgIdx];
-    overlay.classList.add('active');
-}}
-
-function closeModal() {{
-    document.getElementById('img-modal').classList.remove('active');
-    modalCells = [];
-    modalCellIdx = -1;
-}}
-
-function navigateModal(delta) {{
-    if (modalCells.length === 0) return;
-    modalCellIdx = (modalCellIdx + delta + modalCells.length) % modalCells.length;
-    const cell = modalCells[modalCellIdx];
-    const imgIdx = parseInt(cell.querySelector('.idx-label').textContent);
-    showModalImage(imgIdx);
-}}
-
-document.addEventListener('keydown', function(e) {{
-    const overlay = document.getElementById('img-modal');
-    if (!overlay.classList.contains('active')) return;
-    if (e.key === 'Escape') {{ closeModal(); e.preventDefault(); }}
-    else if (e.key === 'ArrowLeft') {{ navigateModal(-1); e.preventDefault(); }}
-    else if (e.key === 'ArrowRight') {{ navigateModal(1); e.preventDefault(); }}
-}});
-
-function updateScatter() {{
-    const pairKey = getPairKey();
-    const direction = getDirection();
-    const pair = LAYER_PAIRS[parseInt(select.value)];
-    updateDirectionLabels();
-
-    // Use ln2 embedding for direction 10, ln1 for direction 01
-    const ln = direction === '10' ? pair.ln2 : pair.ln1;
-    const emb = EMBEDDINGS[ln];
-    const clLabels = CLUSTER_DATA[pairKey][direction];
-    const N = clLabels.length;
-
-    // Separate traces per cluster
-    const traces = {{}};
-    for (let i = 0; i < N; i++) {{
-        const cl = clLabels[i];
-        if (!traces[cl]) traces[cl] = {{x: [], y: [], idx: [], color: CLUSTER_COLORS[cl] || '#888'}};
-        traces[cl].x.push(emb.x[i]);
-        traces[cl].y.push(emb.y[i]);
-        traces[cl].idx.push(i);
-    }}
-
-    const plotTraces = [];
-    // Null cluster first (background)
-    if (traces[0]) {{
-        plotTraces.push({{
-            x: traces[0].x, y: traces[0].y,
-            customdata: traces[0].idx,
-            mode: 'markers',
-            type: 'scatter',
-            marker: {{size: UI.marker_null_size, color: '#444', opacity: UI.marker_null_opacity}},
-            name: 'null cluster',
-            hovertemplate: 'idx: %{{customdata}}<br>label: %{{text}}<extra></extra>',
-            text: traces[0].idx.map(i => LABELS[i].toString()),
-        }});
-    }}
-    // Non-null clusters
-    Object.keys(traces).filter(k => k !== '0').sort().forEach(cl => {{
-        const t = traces[cl];
-        plotTraces.push({{
-            x: t.x, y: t.y,
-            customdata: t.idx,
-            mode: 'markers',
-            type: 'scatter',
-            marker: {{size: UI.marker_cluster_size, color: t.color, opacity: UI.marker_cluster_opacity}},
-            name: `cluster ${{cl}}`,
-            hovertemplate: 'idx: %{{customdata}}<br>cluster: ' + cl + '<br>label: %{{text}}<extra></extra>',
-            text: t.idx.map(i => LABELS[i].toString()),
-        }});
-    }});
-
-    // Matrix group highlight trace
-    plotTraces.push({{
-        x: [], y: [],
-        mode: 'markers', type: 'scatter',
-        marker: {{size: UI.marker_cluster_size + 6, color: 'rgba(0,0,0,0)',
-                  line: {{color: '#e9b450', width: 2.5}}}},
-        name: 'matrix-group',
-        showlegend: false,
-        hoverinfo: 'skip',
-    }});
-
-    const layout = {{
-        xaxis: {{title: {{text: 'UMAP 1', font: {{size: UI.font_plot_axis_title}}}}, gridcolor: '#2a2a4a', tickfont: {{size: UI.font_plot_tick}}}},
-        yaxis: {{title: {{text: 'UMAP 2', font: {{size: UI.font_plot_axis_title}}}}, gridcolor: '#2a2a4a', tickfont: {{size: UI.font_plot_tick}}}},
-        plot_bgcolor: '#0f1a30',
-        paper_bgcolor: '#16213e',
-        font: {{color: '#e0e0e0', size: UI.font_plot_general}},
-        legend: {{font: {{size: UI.font_plot_legend}}}},
-        margin: {{l: 60, r: 20, t: 20, b: 60}},
-        hovermode: 'closest',
-        height: Math.max(UI.scatter_min_height, window.innerHeight - UI.scatter_height_offset),
-    }};
-
-    Plotly.react('scatter-plot', plotTraces, layout, {{responsive: true}});
-
-    // Re-attach click handler
-    const scatterDiv = document.getElementById('scatter-plot');
-    scatterDiv.removeAllListeners && scatterDiv.removeAllListeners('plotly_click');
-    scatterDiv.on('plotly_click', function(data) {{
-        const pt = data.points[0];
-        const imgIdx = pt.customdata;
-        lastClickedIdx = imgIdx;
-        if (activeTab === 'neighbor') showNeighborAnalysis(imgIdx);
-        else showMatrixAnalysis(imgIdx);
-    }});
-
-    // Auto-select top ranked image
-    lastClickedIdx = null;
-    updateRankingSlider();
-    var initRanking = getCurrentRanking();
-    if (initRanking.length > 0) {{
-        selectRank(0);
-    }} else {{
-        document.getElementById('right-content').innerHTML =
-            '<div id="right-placeholder">Click a colored cluster point to see analysis</div>';
-    }}
-}}
-
-function showNeighborAnalysis(imgIdx) {{
-    clearMatrixHighlight();
-    updateRankingSlider();
-    const pairKey = getPairKey();
-    const direction = getDirection();
-    const pair = LAYER_PAIRS[parseInt(select.value)];
-    const lb = L(pair);
-    const nbData = NEIGHBOR_DATA[pairKey]?.[direction]?.[imgIdx];
-
-    if (!nbData) {{
-        document.getElementById('right-content').innerHTML =
-            '<div id="right-placeholder">No neighbor data for this point (null cluster or no data)</div>';
-        return;
-    }}
-
-    let html = `<div class="clicked-img">` +
-        `<img src="data:image/jpeg;base64,${{THUMBNAILS[imgIdx]}}" style="cursor:pointer" onclick="showModalImage(${{imgIdx}})">` +
-        `<div class="info">Image #${{imgIdx}} | Label: ${{LABELS[imgIdx]}} | Cluster: ${{nbData.cluster}}</div>` +
-        `</div>`;
-
-    const groups = direction === '10' ? lb.n10_groups : lb.n01_groups;
-
-    // Legend
-    html += `<div class="legend">`;
-    groups.forEach(g => {{
-        g.items.forEach(item => {{
-            html += `<div class="legend-item"><div class="legend-swatch" style="background:${{item.color}}"></div>${{item.label}}</div>`;
-        }});
-    }});
-    html += `</div>`;
-
-    // Groups
-    groups.forEach((g, gi) => {{
-        const groupIndices = [];
-        g.items.forEach(item => {{
-            (nbData[item.key] || []).forEach(j => {{ groupIndices.push(j); }});
-        }});
-        const indicesJson = JSON.stringify(groupIndices);
-        html += `<div class="img-group"><h3>${{g.header}}` +
-            ` <button class="matrix-highlight-btn" data-group-key="nb_${{gi}}" ` +
-            `onclick="highlightMatrixGroup('nb_${{gi}}',${{indicesJson}})">Show on plot</button></h3>` +
-            `<div class="img-grid">`;
-        g.items.forEach(item => {{
-            (nbData[item.key] || []).forEach(j => {{ html += imgTag(j, item.color); }});
-        }});
-        html += `</div></div>`;
-    }});
-
-    document.getElementById('right-content').innerHTML = html;
-}}
-
-""" + _MATRIX_VIEW_JS + f"""
-
-// Event listeners
-select.addEventListener('change', updateScatter);
-document.querySelectorAll('input[name="direction"]').forEach(r => {{
-    r.addEventListener('change', updateScatter);
-}});
-
-// Initial render
-updateDirectionLabels();
-updateScatter();
-
-// -- Splitter drag --
-(function() {{
-    const splitter = document.getElementById('splitter');
-    const left = document.getElementById('left-panel');
-    const right = document.getElementById('right-panel');
-    const container = document.querySelector('.container');
-    let dragging = false;
-    splitter.addEventListener('mousedown', function(e) {{
-        e.preventDefault();
-        dragging = true;
-        splitter.classList.add('active');
-        document.body.style.cursor = 'col-resize';
-        document.body.style.userSelect = 'none';
-    }});
-    document.addEventListener('mousemove', function(e) {{
-        if (!dragging) return;
-        const rect = container.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const splitterW = splitter.offsetWidth;
-        const minL = {c['left_min_width']};
-        const minR = {c['right_min_width']};
-        const leftW = Math.max(minL, Math.min(x - splitterW / 2, rect.width - minR - splitterW));
-        left.style.flex = 'none';
-        right.style.flex = 'none';
-        left.style.width = leftW + 'px';
-        right.style.width = (rect.width - leftW - splitterW) + 'px';
-    }});
-    document.addEventListener('mouseup', function() {{
-        if (!dragging) return;
-        dragging = false;
-        splitter.classList.remove('active');
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        Plotly.Plots.resize('scatter-plot');
-    }});
-}})();
-</script>
-</body>
-</html>"""
-
-    with open(output_path, 'w') as f:
-        f.write(html)
-    print(f'Saved interactive visualization to {output_path}')
-
-
-def generate_html_transition(embeddings, layer_names, rdx_data, neighbor_data, thumbnails, labels,
                               output_path, ui_config=None, matrix_data=None, ranking_data=None):
     """Generate HTML with side-by-side pre/post scatter + animated transition mode."""
     print('Generating transition HTML...')
@@ -1476,6 +957,7 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
         <button id="btn-sbs" class="active" onclick="setView('sbs')">Side-by-Side</button>
         <button id="btn-anim" onclick="setView('anim')">Animate</button>
     </div>
+    <button id="btn-color-by-label" onclick="toggleColorByLabel()" style="background:#0f3460;color:#e0e0e0;border:1px solid #533483;padding:6px 16px;font-size:{c['font_select']}px;cursor:pointer;border-radius:5px;margin-left:8px;">Color by Label</button>
 </div>
 
 <div class="container">
@@ -1548,6 +1030,18 @@ let animRAF = null;
 let highlightIdx = null;  // currently clicked point index
 let activeTab = 'matrix';
 let lastClickedIdx = null;
+let colorByLabel = false;
+
+// Generate distinct colors for dataset labels
+const UNIQUE_LABELS = [...new Set(LABELS)].sort((a, b) => a - b);
+const LABEL_PALETTE = [
+    '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+    '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+    '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
+    '#c49c94', '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5',
+];
+const LABEL_COLOR_MAP = {{}};
+UNIQUE_LABELS.forEach((lbl, i) => {{ LABEL_COLOR_MAP[lbl] = LABEL_PALETTE[i % LABEL_PALETTE.length]; }});
 
 """ + _LABELS_JS + f"""
 
@@ -1722,6 +1216,93 @@ function buildTraces(emb, clLabels) {{
     return traces;
 }}
 
+// Build traces colored by dataset label instead of cluster
+function buildLabelTraces(emb) {{
+    const N = LABELS.length;
+    const groups = {{}};
+    for (let i = 0; i < N; i++) {{
+        const lbl = LABELS[i];
+        if (!groups[lbl]) groups[lbl] = {{x: [], y: [], idx: [], color: LABEL_COLOR_MAP[lbl] || '#888'}};
+        groups[lbl].x.push(emb.x[i]);
+        groups[lbl].y.push(emb.y[i]);
+        groups[lbl].idx.push(i);
+    }}
+
+    const traces = [];
+    Object.keys(groups).sort((a, b) => a - b).forEach(lbl => {{
+        const g = groups[lbl];
+        traces.push({{
+            x: g.x, y: g.y,
+            customdata: g.idx,
+            mode: 'markers', type: 'scatter',
+            marker: {{size: UI.marker_cluster_size, color: g.color, opacity: UI.marker_cluster_opacity}},
+            name: `label ${{lbl}}`,
+            hovertemplate: 'idx: %{{customdata}}<br>label: %{{text}}<extra></extra>',
+            text: g.idx.map(i => LABELS[i].toString()),
+        }});
+    }});
+
+    // Highlight trace
+    traces.push({{
+        x: [], y: [],
+        mode: 'markers', type: 'scatter',
+        marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
+                  line: {{color: '#fff', width: 3}}}},
+        name: 'selected',
+        showlegend: false,
+        hoverinfo: 'skip',
+    }});
+    // Matrix group highlight trace
+    traces.push({{
+        x: [], y: [],
+        mode: 'markers', type: 'scatter',
+        marker: {{size: UI.marker_cluster_size + 6, color: 'rgba(0,0,0,0)',
+                  line: {{color: '#e9b450', width: 2.5}}}},
+        name: 'matrix-group',
+        showlegend: false,
+        hoverinfo: 'skip',
+    }});
+
+    return traces;
+}}
+
+function getPlotRanges(divId) {{
+    const div = document.getElementById(divId);
+    if (!div || !div.layout) return null;
+    const xa = div.layout.xaxis, ya = div.layout.yaxis;
+    if (!xa || !ya || !xa.range || !ya.range) return null;
+    return {{ xRange: [...xa.range], yRange: [...ya.range] }};
+}}
+
+function applyPlotRanges(divId, ranges) {{
+    if (!ranges) return;
+    Plotly.relayout(divId, {{
+        'xaxis.range': ranges.xRange,
+        'yaxis.range': ranges.yRange,
+    }});
+}}
+
+function toggleColorByLabel() {{
+    colorByLabel = !colorByLabel;
+    const btn = document.getElementById('btn-color-by-label');
+    btn.style.background = colorByLabel ? '#533483' : '#0f3460';
+    // Save current zoom ranges
+    const savedPre = getPlotRanges('scatter-pre');
+    const savedPost = getPlotRanges('scatter-post');
+    const savedAnim = getPlotRanges('scatter-anim');
+    // Re-render current view
+    if (currentView === 'sbs') updateSideBySide();
+    else {{ animInitialized = false; updateAnimFromSlider(); }}
+    // Restore zoom ranges
+    if (currentView === 'sbs') {{
+        applyPlotRanges('scatter-pre', savedPre);
+        applyPlotRanges('scatter-post', savedPost);
+    }} else {{
+        applyPlotRanges('scatter-anim', savedAnim);
+    }}
+    updateHighlight();
+}}
+
 function makeLayout(range, plotHeight) {{
     return {{
         xaxis: {{title: {{text: 'UMAP 1', font: {{size: UI.font_plot_axis_title}}}},
@@ -1815,8 +1396,8 @@ function updateSideBySide() {{
     document.getElementById('sbs-pre-title').textContent = ep.startTitle;
     document.getElementById('sbs-post-title').textContent = ep.endTitle;
 
-    const tracesPre = buildTraces(EMBEDDINGS[ep.startLn], clLabels);
-    const tracesPost = buildTraces(EMBEDDINGS[ep.endLn], clLabels);
+    const tracesPre = colorByLabel ? buildLabelTraces(EMBEDDINGS[ep.startLn]) : buildTraces(EMBEDDINGS[ep.startLn], clLabels);
+    const tracesPost = colorByLabel ? buildLabelTraces(EMBEDDINGS[ep.endLn]) : buildTraces(EMBEDDINGS[ep.endLn], clLabels);
 
     tracesPre.forEach(tr => {{ tr.showlegend = false; }});
     tracesPost.forEach(tr => {{ tr.showlegend = false; }});
@@ -1874,21 +1455,31 @@ function initAnimScatter() {{
     const plotH = Math.max(UI.scatter_min_height,
                            window.innerHeight - UI.scatter_height_offset);
 
-    const N = clLabels.length;
+    const N = colorByLabel ? LABELS.length : clLabels.length;
     const groups = {{}};
-    for (let i = 0; i < N; i++) {{
-        const cl = clLabels[i];
-        if (!groups[cl]) groups[cl] = {{x: [], y: [], idx: [], color: CLUSTER_COLORS[cl] || '#888'}};
-        groups[cl].x.push(e0.x[i]);
-        groups[cl].y.push(e0.y[i]);
-        groups[cl].idx.push(i);
+    if (colorByLabel) {{
+        for (let i = 0; i < N; i++) {{
+            const lbl = LABELS[i];
+            if (!groups[lbl]) groups[lbl] = {{x: [], y: [], idx: [], color: LABEL_COLOR_MAP[lbl] || '#888'}};
+            groups[lbl].x.push(e0.x[i]);
+            groups[lbl].y.push(e0.y[i]);
+            groups[lbl].idx.push(i);
+        }}
+    }} else {{
+        for (let i = 0; i < N; i++) {{
+            const cl = clLabels[i];
+            if (!groups[cl]) groups[cl] = {{x: [], y: [], idx: [], color: CLUSTER_COLORS[cl] || '#888'}};
+            groups[cl].x.push(e0.x[i]);
+            groups[cl].y.push(e0.y[i]);
+            groups[cl].idx.push(i);
+        }}
     }}
 
     const traces = [];
     animTraceIndices = [];
     const animTraceColors = [];
     const animTraceNames = [];
-    if (groups[0]) {{
+    if (!colorByLabel && groups[0]) {{
         traces.push({{
             x: groups[0].x, y: groups[0].y,
             customdata: groups[0].idx,
@@ -1902,20 +1493,24 @@ function initAnimScatter() {{
         animTraceColors.push('#444');
         animTraceNames.push('null');
     }}
-    Object.keys(groups).filter(k => k !== '0').sort().forEach(cl => {{
-        const g = groups[cl];
+    const sortedKeys = colorByLabel
+        ? Object.keys(groups).sort((a, b) => a - b)
+        : Object.keys(groups).filter(k => k !== '0').sort();
+    sortedKeys.forEach(key => {{
+        const g = groups[key];
+        const traceName = colorByLabel ? `label ${{key}}` : `cluster ${{key}}`;
         traces.push({{
             x: g.x, y: g.y,
             customdata: g.idx,
             mode: 'markers', type: 'scatter',
             marker: {{size: UI.marker_cluster_size, color: g.color, opacity: UI.marker_cluster_opacity}},
-            name: `cluster ${{cl}}`, showlegend: false,
-            hovertemplate: 'idx: %{{customdata}}<br>cluster: ' + cl + '<br>label: %{{text}}<extra></extra>',
+            name: traceName, showlegend: false,
+            hovertemplate: 'idx: %{{customdata}}<br>' + traceName + '<br>label: %{{text}}<extra></extra>',
             text: g.idx.map(i => LABELS[i].toString()),
         }});
         animTraceIndices.push(g.idx);
         animTraceColors.push(g.color);
-        animTraceNames.push(`cluster ${{cl}}`);
+        animTraceNames.push(traceName);
     }});
     // Highlight trace
     traces.push({{

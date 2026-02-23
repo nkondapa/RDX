@@ -28,7 +28,6 @@ from interactive_cluster_viz_core import (
     precompute_matrix_data,
     precompute_ranking_data,
     generate_html,
-    generate_html_transition,
 )
 
 
@@ -248,14 +247,9 @@ def main():
 
     # 8. Generate HTML
     output_path = args.output_path or os.path.join(args.rdx_output_dir, 'interactive_viz.html')
-    if ui_config.get('viz_mode', 'single') == 'transition':
-        generate_html_transition(embeddings, layer_names, rdx_data, neighbor_data,
-                                 thumbnails, labels, output_path, ui_config=ui_config,
-                                 matrix_data=matrix_data, ranking_data=ranking_data)
-    else:
-        generate_html(embeddings, layer_names, rdx_data, neighbor_data,
-                      thumbnails, labels, output_path, ui_config=ui_config,
-                      matrix_data=matrix_data, ranking_data=ranking_data)
+    generate_html(embeddings, layer_names, rdx_data, neighbor_data,
+                  thumbnails, labels, output_path, ui_config=ui_config,
+                  matrix_data=matrix_data, ranking_data=ranking_data)
 
 
 if __name__ == '__main__':
