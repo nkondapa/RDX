@@ -317,10 +317,13 @@ def precompute_ranking_data(rdx_data, layer_names, K_matrix=16):
         for direction in ['10', '01']:
             cl_labels = rdx_data[key]['cluster_dict'][direction]['cluster_labels']
             am_mat = gd.get(f'am_{direction}')
+            diff_mat = gd.get(f'diff_{direction}')
             if am_mat is None or r0_dm is None or r1_dm is None:
                 continue
             if not isinstance(am_mat, torch.Tensor):
                 am_mat = torch.tensor(am_mat, dtype=torch.float32)
+            if diff_mat is not None and not isinstance(diff_mat, torch.Tensor):
+                diff_mat = torch.tensor(diff_mat, dtype=torch.float32)
 
             # Use clustered repr distance to find spatial top-K
             clustered_dm = r1_dm if direction == '10' else r0_dm
@@ -338,11 +341,12 @@ def precompute_ranking_data(rdx_data, layer_names, K_matrix=16):
                     topk_indices = d_row.argsort()[:K_matrix]
                     # Sum of affinity submatrix among the neighborhood (matches RDX logic)
                     nhood_am_sum = float(am_mat[topk_indices][:, topk_indices].sum())
-                    # mean_aff = am_mat[topk_indices].mean()
+                    # Sum of diff submatrix among the same neighborhood
+                    nhood_diff_sum = float(diff_mat[topk_indices][:, topk_indices].sum()) if diff_mat is not None else 0.0
                     entries.append({
                         'idx': int(img_idx),
                         'nhood_am_sum': round(nhood_am_sum, 4),
-                        # 'mean_affinity': round(mean_aff, 4),
+                        'nhood_diff_sum': round(nhood_diff_sum, 4),
                         'cluster': int(ci),
                     })
 
@@ -526,7 +530,8 @@ function updateRankLabel() {
     }
     var entry = ranking[ri];
     label.textContent = 'Rank ' + (ri + 1) + '/' + ranking.length +
-        ' | #' + entry.idx + ' | NBHD Aff Sum: ' + entry.nhood_am_sum.toFixed(4);
+        ' | #' + entry.idx + ' | Aff: ' + entry.nhood_am_sum.toFixed(4) +
+        (entry.nhood_diff_sum !== undefined ? ' | Diff: ' + entry.nhood_diff_sum.toFixed(4) : '');
 }
 
 function selectRank(ri) {
@@ -888,8 +893,10 @@ body {{ font-family: Arial, sans-serif; margin: {c['body_margin']}px; background
 .img-modal-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; cursor: pointer; }}
 .img-modal-overlay.active {{ display: flex; }}
-.img-modal-overlay img {{ width: {c['modal_img_size']}px; height: {c['modal_img_size']}px; image-rendering: pixelated; border: {c['modal_border']}px solid #e0e0e0; border-radius: 6px; }}
-.img-modal-overlay .modal-label {{ position: absolute; bottom: 10%; color: #fff; font-size: {c['modal_font_size']}px;
+.modal-pair {{ display: flex; gap: 24px; align-items: center; }}
+.modal-img-container {{ display: flex; flex-direction: column; align-items: center; gap: 8px; }}
+.modal-img-container img {{ width: {c['modal_img_size']}px; height: {c['modal_img_size']}px; image-rendering: pixelated; border: {c['modal_border']}px solid #e0e0e0; border-radius: 6px; }}
+.modal-label {{ color: #fff; font-size: {c['modal_font_size']}px;
     background: rgba(0,0,0,0.7); padding: 6px 14px; border-radius: 4px; }}
 .legend-item {{ display: flex; align-items: center; gap: 5px; }}
 .legend-swatch {{ width: {c['legend_swatch']}px; height: {c['legend_swatch']}px; border-radius: 3px; }}
@@ -957,7 +964,14 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
         <button id="btn-sbs" class="active" onclick="setView('sbs')">Side-by-Side</button>
         <button id="btn-anim" onclick="setView('anim')">Animate</button>
     </div>
-    <button id="btn-color-by-label" onclick="toggleColorByLabel()" style="background:#0f3460;color:#e0e0e0;border:1px solid #533483;padding:6px 16px;font-size:{c['font_select']}px;cursor:pointer;border-radius:5px;margin-left:8px;">Color by Label</button>
+    <label>Color by:
+        <select id="color-mode-select" onchange="onColorModeChange()">
+            <option value="cluster" selected>Cluster</option>
+            <option value="label">Label</option>
+            <option value="diff">NBHD Diff Sum</option>
+            <option value="aff">NBHD Aff Sum</option>
+        </select>
+    </label>
 </div>
 
 <div class="container">
@@ -1006,8 +1020,16 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
 </div>
 
 <div id="img-modal" class="img-modal-overlay" onclick="closeModal()">
-    <img src="" onclick="event.stopPropagation()">
-    <div class="modal-label"></div>
+    <div class="modal-pair" onclick="event.stopPropagation()">
+        <div class="modal-img-container">
+            <img id="modal-selected-img" src="">
+            <div id="modal-selected-label" class="modal-label"></div>
+        </div>
+        <div class="modal-img-container">
+            <img id="modal-neighbor-img" src="">
+            <div id="modal-neighbor-label" class="modal-label"></div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -1030,7 +1052,7 @@ let animRAF = null;
 let highlightIdx = null;  // currently clicked point index
 let activeTab = 'matrix';
 let lastClickedIdx = null;
-let colorByLabel = false;
+let colorMode = 'cluster';  // 'cluster', 'label', or 'diff'
 
 // Generate distinct colors for dataset labels
 const UNIQUE_LABELS = [...new Set(LABELS)].sort((a, b) => a - b);
@@ -1111,8 +1133,21 @@ function openModal(cell, imgIdx) {{
 
 function showModalImage(imgIdx) {{
     const overlay = document.getElementById('img-modal');
-    overlay.querySelector('img').src = 'data:image/jpeg;base64,' + THUMBNAILS[imgIdx];
-    overlay.querySelector('.modal-label').textContent = 'Image #' + imgIdx + ' | Label: ' + LABELS[imgIdx];
+    // Show selected (clicked) image on the left
+    const selImg = document.getElementById('modal-selected-img');
+    const selLabel = document.getElementById('modal-selected-label');
+    if (lastClickedIdx !== null) {{
+        selImg.src = 'data:image/jpeg;base64,' + THUMBNAILS[lastClickedIdx];
+        selLabel.textContent = 'Selected #' + lastClickedIdx + ' | Label: ' + LABELS[lastClickedIdx];
+        selImg.style.display = '';
+        selLabel.style.display = '';
+    }} else {{
+        selImg.style.display = 'none';
+        selLabel.style.display = 'none';
+    }}
+    // Show neighbor image on the right
+    document.getElementById('modal-neighbor-img').src = 'data:image/jpeg;base64,' + THUMBNAILS[imgIdx];
+    document.getElementById('modal-neighbor-label').textContent = 'Neighbor #' + imgIdx + ' | Label: ' + LABELS[imgIdx];
     overlay.classList.add('active');
 }}
 
@@ -1266,6 +1301,114 @@ function buildLabelTraces(emb) {{
     return traces;
 }}
 
+// Build traces colored by a scalar value from ranking data (continuous colormap)
+// valueKey: 'nhood_diff_sum' or 'nhood_am_sum'
+// colorscale: Plotly colorscale name
+// cmid: center value for diverging scales (null for sequential)
+// title: colorbar title
+function buildScalarTraces(emb, valueKey, colorscale, cmid, title) {{
+    const pairKey = getPairKey();
+    const direction = getDirection();
+    const ranking = (RANKING_DATA[pairKey] && RANKING_DATA[pairKey][direction]) || [];
+    const N = LABELS.length;
+
+    // Build lookup from ranking entries
+    const valMap = {{}};
+    ranking.forEach(entry => {{ valMap[entry.idx] = entry[valueKey]; }});
+
+    // Separate points with and without values
+    const hasVal = {{x: [], y: [], idx: [], vals: []}};
+    const noVal = {{x: [], y: [], idx: []}};
+    for (let i = 0; i < N; i++) {{
+        if (valMap[i] !== undefined) {{
+            hasVal.x.push(emb.x[i]);
+            hasVal.y.push(emb.y[i]);
+            hasVal.idx.push(i);
+            hasVal.vals.push(valMap[i]);
+        }} else {{
+            noVal.x.push(emb.x[i]);
+            noVal.y.push(emb.y[i]);
+            noVal.idx.push(i);
+        }}
+    }}
+
+    const traces = [];
+
+    // Null/no-data points
+    if (noVal.x.length > 0) {{
+        traces.push({{
+            x: noVal.x, y: noVal.y,
+            customdata: noVal.idx,
+            mode: 'markers', type: 'scatter',
+            marker: {{size: UI.marker_null_size, color: '#444', opacity: UI.marker_null_opacity}},
+            name: 'no data',
+            hovertemplate: 'idx: %{{customdata}}<br>label: %{{text}}<extra></extra>',
+            text: noVal.idx.map(i => LABELS[i].toString()),
+        }});
+    }}
+
+    // Colored points
+    if (hasVal.x.length > 0) {{
+        const markerOpts = {{
+            size: UI.marker_cluster_size,
+            color: hasVal.vals,
+            colorscale: colorscale,
+            opacity: UI.marker_cluster_opacity,
+            colorbar: {{title: title, tickfont: {{color: '#e0e0e0'}}, titlefont: {{color: '#e0e0e0'}}}},
+        }};
+        if (cmid !== null) markerOpts.cmid = cmid;
+        traces.push({{
+            x: hasVal.x, y: hasVal.y,
+            customdata: hasVal.idx,
+            mode: 'markers', type: 'scatter',
+            marker: markerOpts,
+            name: title,
+            hovertemplate: 'idx: %{{customdata}}<br>' + title + ': %{{marker.color:.3f}}<br>label: %{{text}}<extra></extra>',
+            text: hasVal.idx.map(i => LABELS[i].toString()),
+        }});
+    }}
+
+    // Highlight trace
+    traces.push({{
+        x: [], y: [],
+        mode: 'markers', type: 'scatter',
+        marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
+                  line: {{color: '#fff', width: 3}}}},
+        name: 'selected',
+        showlegend: false,
+        hoverinfo: 'skip',
+    }});
+    // Matrix group highlight trace
+    traces.push({{
+        x: [], y: [],
+        mode: 'markers', type: 'scatter',
+        marker: {{size: UI.marker_cluster_size + 6, color: 'rgba(0,0,0,0)',
+                  line: {{color: '#e9b450', width: 2.5}}}},
+        name: 'matrix-group',
+        showlegend: false,
+        hoverinfo: 'skip',
+    }});
+
+    return traces;
+}}
+
+function buildDiffTraces(emb) {{
+    // Blue (neg) -> White (0) -> Red (pos), centered at 0
+    return buildScalarTraces(emb, 'nhood_diff_sum', [[0,'blue'],[0.5,'white'],[1,'red']], 0, 'NBHD Diff Sum');
+}}
+
+function buildAffTraces(emb) {{
+    return buildScalarTraces(emb, 'nhood_am_sum', 'YlOrRd', null, 'NBHD Aff Sum');
+}}
+
+// Dispatch to the right trace builder based on colorMode
+function buildColoredTraces(emb, clLabels) {{
+    if (colorMode === 'label') return buildLabelTraces(emb);
+    if (colorMode === 'diff') return buildDiffTraces(emb);
+    if (colorMode === 'aff') return buildAffTraces(emb);
+    return buildTraces(emb, clLabels);
+}}
+
 function getPlotRanges(divId) {{
     const div = document.getElementById(divId);
     if (!div || !div.layout) return null;
@@ -1282,10 +1425,8 @@ function applyPlotRanges(divId, ranges) {{
     }});
 }}
 
-function toggleColorByLabel() {{
-    colorByLabel = !colorByLabel;
-    const btn = document.getElementById('btn-color-by-label');
-    btn.style.background = colorByLabel ? '#533483' : '#0f3460';
+function onColorModeChange() {{
+    colorMode = document.getElementById('color-mode-select').value;
     // Save current zoom ranges
     const savedPre = getPlotRanges('scatter-pre');
     const savedPost = getPlotRanges('scatter-post');
@@ -1396,8 +1537,8 @@ function updateSideBySide() {{
     document.getElementById('sbs-pre-title').textContent = ep.startTitle;
     document.getElementById('sbs-post-title').textContent = ep.endTitle;
 
-    const tracesPre = colorByLabel ? buildLabelTraces(EMBEDDINGS[ep.startLn]) : buildTraces(EMBEDDINGS[ep.startLn], clLabels);
-    const tracesPost = colorByLabel ? buildLabelTraces(EMBEDDINGS[ep.endLn]) : buildTraces(EMBEDDINGS[ep.endLn], clLabels);
+    const tracesPre = buildColoredTraces(EMBEDDINGS[ep.startLn], clLabels);
+    const tracesPost = buildColoredTraces(EMBEDDINGS[ep.endLn], clLabels);
 
     tracesPre.forEach(tr => {{ tr.showlegend = false; }});
     tracesPost.forEach(tr => {{ tr.showlegend = false; }});
@@ -1413,13 +1554,14 @@ function updateSideBySide() {{
     attachClickHandler('scatter-pre');
     attachClickHandler('scatter-post');
 
-    // Build shared HTML legend (skip the last highlight trace)
+    // Build shared HTML legend (skip highlight traces and array-color traces)
     sbsTraceVisible = tracesPre.map(() => true);
     const legendDiv = document.getElementById('sbs-legend');
     let legendHtml = '';
-    for (let ti = 0; ti < tracesPre.length - 1; ti++) {{
+    for (let ti = 0; ti < tracesPre.length - 2; ti++) {{
         const tr = tracesPost[ti];
-        const color = tr.marker.color || '#888';
+        const color = tr.marker.color;
+        if (typeof color !== 'string') continue;
         legendHtml += `<div class="sbs-legend-item" data-ti="${{ti}}">` +
             `<div style="width:{c['legend_swatch']}px;height:{c['legend_swatch']}px;` +
             `border-radius:3px;background:${{color}};"></div>${{tr.name}}</div>`;
@@ -1455,94 +1597,38 @@ function initAnimScatter() {{
     const plotH = Math.max(UI.scatter_min_height,
                            window.innerHeight - UI.scatter_height_offset);
 
-    const N = colorByLabel ? LABELS.length : clLabels.length;
-    const groups = {{}};
-    if (colorByLabel) {{
-        for (let i = 0; i < N; i++) {{
-            const lbl = LABELS[i];
-            if (!groups[lbl]) groups[lbl] = {{x: [], y: [], idx: [], color: LABEL_COLOR_MAP[lbl] || '#888'}};
-            groups[lbl].x.push(e0.x[i]);
-            groups[lbl].y.push(e0.y[i]);
-            groups[lbl].idx.push(i);
-        }}
-    }} else {{
-        for (let i = 0; i < N; i++) {{
-            const cl = clLabels[i];
-            if (!groups[cl]) groups[cl] = {{x: [], y: [], idx: [], color: CLUSTER_COLORS[cl] || '#888'}};
-            groups[cl].x.push(e0.x[i]);
-            groups[cl].y.push(e0.y[i]);
-            groups[cl].idx.push(i);
-        }}
-    }}
+    // Build traces using the current color mode
+    const traces = buildColoredTraces(e0, clLabels);
+    traces.forEach(tr => {{ tr.showlegend = false; }});
 
-    const traces = [];
+    // Build animTraceIndices from the traces (needed for interpolation)
     animTraceIndices = [];
     const animTraceColors = [];
     const animTraceNames = [];
-    if (!colorByLabel && groups[0]) {{
-        traces.push({{
-            x: groups[0].x, y: groups[0].y,
-            customdata: groups[0].idx,
-            mode: 'markers', type: 'scatter',
-            marker: {{size: UI.marker_null_size, color: '#444', opacity: UI.marker_null_opacity}},
-            name: 'null', showlegend: false,
-            hovertemplate: 'idx: %{{customdata}}<br>label: %{{text}}<extra></extra>',
-            text: groups[0].idx.map(i => LABELS[i].toString()),
-        }});
-        animTraceIndices.push(groups[0].idx);
-        animTraceColors.push('#444');
-        animTraceNames.push('null');
-    }}
-    const sortedKeys = colorByLabel
-        ? Object.keys(groups).sort((a, b) => a - b)
-        : Object.keys(groups).filter(k => k !== '0').sort();
-    sortedKeys.forEach(key => {{
-        const g = groups[key];
-        const traceName = colorByLabel ? `label ${{key}}` : `cluster ${{key}}`;
-        traces.push({{
-            x: g.x, y: g.y,
-            customdata: g.idx,
-            mode: 'markers', type: 'scatter',
-            marker: {{size: UI.marker_cluster_size, color: g.color, opacity: UI.marker_cluster_opacity}},
-            name: traceName, showlegend: false,
-            hovertemplate: 'idx: %{{customdata}}<br>' + traceName + '<br>label: %{{text}}<extra></extra>',
-            text: g.idx.map(i => LABELS[i].toString()),
-        }});
-        animTraceIndices.push(g.idx);
-        animTraceColors.push(g.color);
-        animTraceNames.push(traceName);
+    traces.forEach(tr => {{
+        if (tr.customdata) {{
+            animTraceIndices.push(tr.customdata);
+            animTraceColors.push(tr.marker.color || '#888');
+            animTraceNames.push(tr.name);
+        }} else {{
+            animTraceIndices.push([]);
+        }}
     }});
-    // Highlight trace
-    traces.push({{
-        x: [], y: [],
-        mode: 'markers', type: 'scatter',
-        marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
-                  line: {{color: '#fff', width: 3}}}},
-        name: 'selected', showlegend: false, hoverinfo: 'skip',
-    }});
-    animTraceIndices.push([]);
-    // Matrix group highlight trace
-    traces.push({{
-        x: [], y: [],
-        mode: 'markers', type: 'scatter',
-        marker: {{size: UI.marker_cluster_size + 6, color: 'rgba(0,0,0,0)',
-                  line: {{color: '#e9b450', width: 2.5}}}},
-        name: 'matrix-group', showlegend: false, hoverinfo: 'skip',
-    }});
-    animTraceIndices.push([]);
 
     const animLayout = makeLayout(range, plotH);
     animLayout.showlegend = false;
     Plotly.react('scatter-anim', traces, animLayout, {{responsive: true}});
     attachClickHandler('scatter-anim');
 
-    // Build legend for anim view
+    // Build legend for anim view (skip traces with array colors like diff mode)
     const legendDiv = document.getElementById('anim-legend');
     let legendHtml = '';
     for (let ti = 0; ti < animTraceColors.length; ti++) {{
+        const c_ = animTraceColors[ti];
+        if (typeof c_ !== 'string') continue;
         legendHtml += `<div class="sbs-legend-item" data-ti="${{ti}}">` +
             `<div style="width:{c['legend_swatch']}px;height:{c['legend_swatch']}px;` +
-            `border-radius:3px;background:${{animTraceColors[ti]}};"></div>${{animTraceNames[ti]}}</div>`;
+            `border-radius:3px;background:${{c_}};"></div>${{animTraceNames[ti]}}</div>`;
     }}
     legendDiv.innerHTML = legendHtml;
     legendDiv.querySelectorAll('.sbs-legend-item').forEach(el => {{
