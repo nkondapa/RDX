@@ -13,6 +13,7 @@ Set ui_config['comparison_mode'] to control label semantics:
 import base64
 import io
 import json
+import os
 
 import numpy as np
 import torch
@@ -269,10 +270,10 @@ def precompute_matrix_data(rdx_data, layer_names, K_matrix=16):
                         idx_t = torch.tensor(indices, dtype=torch.long)
                         result = {
                             'indices': [int(j) for j in indices],
-                            'dm0': dm_mat[0, img_idx, idx_t].tolist() if dm_mat is not None else [],
-                            'dm1': dm_mat[1, img_idx, idx_t].tolist() if dm_mat is not None else [],
-                            'diff': diff_mat[img_idx, idx_t].tolist(),
-                            'am': am_mat[img_idx, idx_t].tolist(),
+                            'dm0': [round(v, 4) for v in dm_mat[0, img_idx, idx_t].tolist()] if dm_mat is not None else [],
+                            'dm1': [round(v, 4) for v in dm_mat[1, img_idx, idx_t].tolist()] if dm_mat is not None else [],
+                            'diff': [round(v, 4) for v in diff_mat[img_idx, idx_t].tolist()],
+                            'am': [round(v, 4) for v in am_mat[img_idx, idx_t].tolist()],
                         }
                         return result
 
@@ -781,7 +782,7 @@ function showMatrixAnalysis(imgIdx) {
 
     var K_matrix = UI.K_matrix || 16;
     var html = '<div class="clicked-img">' +
-        '<img src="data:image/jpeg;base64,' + THUMBNAILS[imgIdx] + '" style="cursor:pointer" onclick="showModalImage(' + imgIdx + ')">' +
+        '<img src="' + thumbSrc(imgIdx) + '" style="cursor:pointer" onclick="showModalImage(' + imgIdx + ')">' +
         '<div class="info">Image #' + imgIdx + ' | Label: ' + LABELS[imgIdx] + ' | Cluster: ' + md.cluster + '</div>' +
         '</div>';
 
@@ -839,7 +840,7 @@ function showMatrixAnalysis(imgIdx) {
         html += '<div class="matrix-row">';
         g.indices.forEach(function(j) {
             html += '<div class="matrix-cell">' +
-                '<img src="data:image/jpeg;base64,' + THUMBNAILS[j] + '" width="48" height="48" ' +
+                '<img src="' + thumbSrc(j) + '" width="48" height="48" ' +
                 'style="cursor:pointer" onclick="openModal(this.parentElement,' + j + ')">' +
                 '<span class="idx-label" style="font-size:9px;color:#aaa">' + j + '</span></div>';
         });
@@ -899,9 +900,9 @@ function showMatrixAnalysis(imgIdx) {
 
 
 
-def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbnails, labels,
+def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbs_dir, labels,
                               output_path, ui_config=None, matrix_data=None, ranking_data=None,
-                              knn_data=None, lin_data=None):
+                              knn_data=None, lin_data=None, lazy_load=False):
     """Generate HTML with side-by-side pre/post scatter + animated transition mode."""
     print('Generating transition HTML...')
 
@@ -1129,13 +1130,15 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
     </div>
 </div>
 
+{'<!-- Data loaded lazily -->' if lazy_load else '<script src="neighbor_data.js"></script><script src="matrix_data.js"></script><script src="ranking_data.js"></script>'}
 <script>
-const THUMBNAILS = {json.dumps(thumbnails)};
+const THUMBS_DIR = "{thumbs_dir}";
+function thumbSrc(idx) {{ return THUMBS_DIR + '/' + String(idx).padStart(4, '0') + '.jpg'; }}
 const EMBEDDINGS = {json.dumps(embedding_data)};
 const CLUSTER_DATA = {json.dumps(cluster_data)};
-const NEIGHBOR_DATA = {json.dumps(neighbor_data)};
-const MATRIX_DATA = {json.dumps(matrix_data or {})};
-const RANKING_DATA = {json.dumps(ranking_data or {})};
+let NEIGHBOR_DATA = {'{}' if lazy_load else '_NEIGHBOR_DATA'};
+let MATRIX_DATA = {'{}' if lazy_load else '_MATRIX_DATA'};
+let RANKING_DATA = {'{}' if lazy_load else '_RANKING_DATA'};
 const KNN_DATA = {json.dumps(knn_data or {})};
 const LIN_DATA = {json.dumps(lin_data or {})};
 const LABELS = {json.dumps(labels_list)};
@@ -1143,7 +1146,7 @@ const LAYER_PAIRS = {json.dumps(layer_pairs)};
 const UI = {json.dumps(c)};
 
 // const CLUSTER_COLORS = ['#888888', '#e94560', '#0f3460', '#533483', '#e9b450', '#16c79a'];
-const CLUSTER_COLORS = ["#7f7f7f", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#1b9e77", "#bcbd22", "#17becf"];
+const CLUSTER_COLORS = ["#7f7f7f", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#1b9e77", "#bcbd22", "#17becf", "#7570B3FF", "#E7298AFF"];
 
 let currentView = 'sbs';  // 'sbs' or 'anim'
 let animPlaying = false;
@@ -1175,22 +1178,38 @@ LAYER_PAIRS.forEach((p, i) => {{
     select.appendChild(opt);
 }});
 
-// Add KNN and LIN options to color-mode dropdown (one per layer that has data)
-(function() {{
+// Rebuild KNN/LIN options in color-mode dropdown for the current layer pair
+function updateColorModeOptions() {{
     const colorSel = document.getElementById('color-mode-select');
-    Object.keys(KNN_DATA).forEach(ln => {{
-        const opt = document.createElement('option');
-        opt.value = 'knn:' + ln;
-        opt.textContent = 'KNN (' + ln + ')';
-        colorSel.appendChild(opt);
+    const prev = colorSel.value;
+    // Remove old knn:/lin: options
+    Array.from(colorSel.options).forEach(opt => {{
+        if (opt.value.startsWith('knn:') || opt.value.startsWith('lin:')) opt.remove();
     }});
-    Object.keys(LIN_DATA).forEach(ln => {{
-        const opt = document.createElement('option');
-        opt.value = 'lin:' + ln;
-        opt.textContent = 'Linear (' + ln + ')';
-        colorSel.appendChild(opt);
+    // Add options for the two layers in the current pair
+    const pair = getPair();
+    const layers = [pair.ln1, pair.ln2];
+    layers.forEach(ln => {{
+        if (KNN_DATA[ln]) {{
+            const opt = document.createElement('option');
+            opt.value = 'knn:' + ln;
+            opt.textContent = 'KNN (' + ln + ')';
+            colorSel.appendChild(opt);
+        }}
     }});
-}})();
+    layers.forEach(ln => {{
+        if (LIN_DATA[ln]) {{
+            const opt = document.createElement('option');
+            opt.value = 'lin:' + ln;
+            opt.textContent = 'Linear (' + ln + ')';
+            colorSel.appendChild(opt);
+        }}
+    }});
+    // Restore previous selection if still valid, otherwise fall back to 'cluster'
+    const validValues = Array.from(colorSel.options).map(o => o.value);
+    colorSel.value = validValues.includes(prev) ? prev : 'cluster';
+    colorMode = colorSel.value;
+}}
 
 function getPairKey() {{
     const idx = parseInt(select.value);
@@ -1222,7 +1241,7 @@ function imgTag(idx, borderColor) {{
     const size = UI.thumb_display_size;
     const bw = UI.thumb_border_width;
     return `<div class="img-cell" onclick="openModal(this, ${{idx}})">` +
-        `<img src="data:image/jpeg;base64,${{THUMBNAILS[idx]}}" width="${{size}}" height="${{size}}">` +
+        `<img src="${{thumbSrc(idx)}}" width="${{size}}" height="${{size}}">` +
         `<div class="border-overlay" style="border: ${{bw}}px solid ${{borderColor}};"></div>` +
         `<div class="idx-label">${{idx}}</div></div>`;
 }}
@@ -1253,7 +1272,7 @@ function showModalImage(imgIdx) {{
     const selImg = document.getElementById('modal-selected-img');
     const selLabel = document.getElementById('modal-selected-label');
     if (lastClickedIdx !== null) {{
-        selImg.src = 'data:image/jpeg;base64,' + THUMBNAILS[lastClickedIdx];
+        selImg.src = thumbSrc(lastClickedIdx);
         selLabel.textContent = 'Selected #' + lastClickedIdx + ' | Label: ' + LABELS[lastClickedIdx];
         selImg.style.display = '';
         selLabel.style.display = '';
@@ -1262,7 +1281,7 @@ function showModalImage(imgIdx) {{
         selLabel.style.display = 'none';
     }}
     // Show neighbor image on the right
-    document.getElementById('modal-neighbor-img').src = 'data:image/jpeg;base64,' + THUMBNAILS[imgIdx];
+    document.getElementById('modal-neighbor-img').src = thumbSrc(imgIdx);
     document.getElementById('modal-neighbor-label').textContent = 'Neighbor #' + imgIdx + ' | Label: ' + LABELS[imgIdx];
     overlay.classList.add('active');
 }}
@@ -1939,6 +1958,7 @@ function updateView() {{
     highlightIdx = null;
     lastClickedIdx = null;
     animInitialized = false;
+    updateColorModeOptions();
     updateDirectionLabels();
     updateRankingSlider();
     if (currentView === 'sbs') updateSideBySide();
@@ -1970,7 +1990,7 @@ function showNeighborAnalysis(imgIdx) {{
     }}
 
     let html = `<div class="clicked-img">` +
-        `<img src="data:image/jpeg;base64,${{THUMBNAILS[imgIdx]}}" style="cursor:pointer" onclick="showModalImage(${{imgIdx}})">` +
+        `<img src="${{thumbSrc(imgIdx)}}" style="cursor:pointer" onclick="showModalImage(${{imgIdx}})">` +
         `<div class="info">Image #${{imgIdx}} | Label: ${{LABELS[imgIdx]}} | Cluster: ${{nbData.cluster}}</div>` +
         `</div>`;
 
@@ -2026,6 +2046,28 @@ document.getElementById('anim-slider').addEventListener('input', function() {{
 // Initial render
 updateDirectionLabels();
 updateView();
+{"" if not lazy_load else '''
+// Lazy-load external data files
+(function() {{
+    let loaded = 0;
+    const total = 3;
+    function onLoaded() {{
+        loaded++;
+        if (loaded === total) {{
+            NEIGHBOR_DATA = _NEIGHBOR_DATA;
+            MATRIX_DATA = _MATRIX_DATA;
+            RANKING_DATA = _RANKING_DATA;
+            updateView();
+        }}
+    }}
+    ['neighbor_data.js', 'matrix_data.js', 'ranking_data.js'].forEach(src => {{
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = onLoaded;
+        document.head.appendChild(s);
+    }});
+}})();
+'''}
 
 // -- Splitter drag --
 (function() {{
@@ -2070,6 +2112,18 @@ updateView();
 </script>
 </body>
 </html>"""
+
+    output_dir = os.path.dirname(output_path)
+
+    for fname, varname, data in [('neighbor_data.js', '_NEIGHBOR_DATA', neighbor_data),
+                                   ('matrix_data.js', '_MATRIX_DATA', matrix_data or {}),
+                                   ('ranking_data.js', '_RANKING_DATA', ranking_data or {})]:
+        fpath = os.path.join(output_dir, fname)
+        with open(fpath, 'w') as jf:
+            jf.write(f'const {varname} = ')
+            json.dump(data, jf)
+            jf.write(';\n')
+        print(f'  Wrote {fname} ({os.path.getsize(fpath) / 1024 / 1024:.1f} MB)')
 
     with open(output_path, 'w') as f:
         f.write(html)

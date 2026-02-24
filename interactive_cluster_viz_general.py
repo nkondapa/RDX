@@ -22,7 +22,6 @@ from PIL import Image
 from tqdm import tqdm
 
 from interactive_cluster_viz_core import (
-    encode_thumbnail,
     compute_aligned_umap,
     precompute_neighbor_data,
     precompute_matrix_data,
@@ -78,8 +77,8 @@ def load_comparison_data(rdx_output_dir, repr_0_path, repr_1_path,
     return acts, None, layer_names, rdx_data
 
 
-def load_thumbnails_from_paths(image_paths_file, data_root=None, thumb_size=56):
-    """Load image thumbnails from a pkl file containing image paths.
+def save_thumbnails_from_paths(image_paths_file, output_dir, data_root=None, thumb_size=56):
+    """Load image thumbnails from a pkl file and save as JPEG files to disk.
 
     The pkl file can contain either:
         - A dict with 'paths' (list of paths) and optionally 'data_root' (str)
@@ -87,12 +86,16 @@ def load_thumbnails_from_paths(image_paths_file, data_root=None, thumb_size=56):
 
     Args:
         image_paths_file: Path to pkl file with image paths.
+        output_dir: Directory where thumbs/ folder will be created.
         data_root: Optional override for the data root prefix.
         thumb_size: Thumbnail size in pixels.
 
     Returns:
-        List of base64-encoded JPEG thumbnail strings.
+        labels: Labels array if present in the data, else None.
     """
+    thumbs_dir = os.path.join(output_dir, 'thumbs')
+    os.makedirs(thumbs_dir, exist_ok=True)
+
     print(f'Loading image paths from {image_paths_file} ...')
     with open(image_paths_file, 'rb') as f:
         data = pkl.load(f)
@@ -108,15 +111,14 @@ def load_thumbnails_from_paths(image_paths_file, data_root=None, thumb_size=56):
             data_root = ''
         labels = None
 
-    print(f'Encoding {len(paths)} thumbnails...')
-    thumbnails = []
-    for p in tqdm(paths, desc='Encoding thumbnails'):
+    print(f'Saving {len(paths)} thumbnails...')
+    for i, p in enumerate(tqdm(paths, desc='Saving thumbnails')):
         full_path = os.path.join(data_root, p) if data_root else p
         img = Image.open(full_path).convert('RGB')
         img = img.resize((thumb_size, thumb_size), Image.LANCZOS)
-        thumbnails.append(encode_thumbnail(img))
+        img.save(os.path.join(thumbs_dir, f'{i:04d}.jpg'), format='JPEG', quality=70)
 
-    return thumbnails, labels
+    return labels
 
 
 def main():
@@ -147,6 +149,8 @@ def main():
                         help='Number of neighbors for matrix view tab')
     parser.add_argument('--clf_method', type=str, default='knn', choices=['knn', 'lin'],
                         help='Classifier for scatter coloring: knn or lin (linear probe)')
+    parser.add_argument('--lazy_load', action='store_true',
+                        help='Lazy-load large data files for faster initial page render')
     args = parser.parse_args()
 
     # UI config
@@ -222,16 +226,19 @@ def main():
     # # Default labels to zeros if not available
 
 
-    # 3. Load thumbnails
+    # 3. Save thumbnails to disk
+    output_dir = os.path.dirname(args.output_path or os.path.join(args.rdx_output_dir, 'interactive_viz.html'))
     if args.image_paths is not None:
-        thumbnails, labels = load_thumbnails_from_paths(args.image_paths, data_root=args.data_root,
-                                                thumb_size=args.thumb_size)
+        labels = save_thumbnails_from_paths(args.image_paths, output_dir, data_root=args.data_root,
+                                            thumb_size=args.thumb_size)
     else:
         # Generate placeholder thumbnails (gray squares)
-        print('No image paths provided, using placeholder thumbnails...')
+        print('No image paths provided, saving placeholder thumbnails...')
+        thumbs_dir = os.path.join(output_dir, 'thumbs')
+        os.makedirs(thumbs_dir, exist_ok=True)
         placeholder = Image.new('RGB', (args.thumb_size, args.thumb_size), (128, 128, 128))
-        placeholder_b64 = encode_thumbnail(placeholder)
-        thumbnails = [placeholder_b64] * N
+        for i in range(N):
+            placeholder.save(os.path.join(thumbs_dir, f'{i:04d}.jpg'), format='JPEG', quality=70)
 
     if labels is None:
         labels = np.zeros(N, dtype=int)
@@ -256,9 +263,9 @@ def main():
     # 9. Generate HTML
     output_path = args.output_path or os.path.join(args.rdx_output_dir, 'interactive_viz.html')
     generate_html(embeddings, layer_names, rdx_data, neighbor_data,
-                  thumbnails, labels, output_path, ui_config=ui_config,
+                  'thumbs', labels, output_path, ui_config=ui_config,
                   matrix_data=matrix_data, ranking_data=ranking_data,
-                  **{knn_kw: clf_data})
+                  lazy_load=args.lazy_load, **{knn_kw: clf_data})
 
 
 if __name__ == '__main__':

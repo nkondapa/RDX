@@ -31,13 +31,24 @@ def parse_args(description=None):
 
 
 # ── Model / Dataset Loading ─────────────────────────────────────────────────
-def load_model(device='cuda'):
+def load_model(model_name, device='cuda'):
     """Load BiomedCLIP and return (visual_encoder, preprocess)."""
-    print('Loading BiomedCLIP ...')
-    model, preprocess = create_model_from_pretrained(
-        'hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224'
-    )
-    visual = model.visual.to(device).eval().requires_grad_(False)
+    if model_name == 'biomedclip':
+        print('Loading BiomedCLIP ...')
+        model, preprocess = create_model_from_pretrained(
+            'hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224'
+        )
+        visual = model.visual.to(device).eval().requires_grad_(False)
+    elif model_name == 'dinov2':
+        import timm
+        from timm.data import resolve_data_config, create_transform
+        print('Loading DINOv2 (timm) ...')
+        visual = timm.create_model('vit_base_patch14_dinov2', pretrained=True, img_size=224)
+        visual = visual.to(device).eval().requires_grad_(False)
+        config = resolve_data_config(model=visual)
+        config['input_size'] = (3, 224, 224)
+        preprocess = create_transform(**config, is_training=False)
+
     return visual, preprocess
 
 
@@ -65,9 +76,9 @@ def find_transformer_blocks(visual_encoder):
     if names:
         return names, modules
 
-    # Fallback: try visual.transformer.resblocks (older open_clip)
+    # Bare timm ViT (e.g. DINOv2): blocks.0, blocks.1, ...
     for name, module in visual_encoder.named_modules():
-        if 'blocks' in name and name.count('.') == 1:
+        if name.startswith('blocks.') and name.count('.') == 1:
             names.append(name)
             modules.append(module)
     return names, modules

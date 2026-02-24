@@ -17,7 +17,6 @@ import torchvision
 from tqdm import tqdm
 
 from interactive_cluster_viz_core import (
-    encode_thumbnail,
     compute_aligned_umap,
     precompute_neighbor_data,
     precompute_matrix_data,
@@ -71,8 +70,11 @@ def load_cached_data(output_dir):
     return acts, labels, layer_names, rdx_data
 
 
-def load_images_as_thumbnails(data_root, num_samples, probe_num_samples=1500, thumb_size=56):
-    """Load dataset images and encode as base64 JPEG thumbnails."""
+def save_images_as_thumbnails(data_root, output_dir, num_samples, probe_num_samples=1500, thumb_size=56):
+    """Load dataset images and save as JPEG thumbnails to disk."""
+    thumbs_dir = os.path.join(output_dir, 'thumbs')
+    os.makedirs(thumbs_dir, exist_ok=True)
+
     # Use a resize-only transform (no normalization)
     transform = torchvision.transforms.Compose([
         torchvision.transforms.Resize((thumb_size, thumb_size)),
@@ -83,16 +85,13 @@ def load_images_as_thumbnails(data_root, num_samples, probe_num_samples=1500, th
         inds_dict = pkl.load(f)
         ptch_inds = inds_dict['ptch_inds']
 
-    print('Loading image thumbnails...')
-    thumbnails = []
-    for idx in tqdm(ptch_inds, desc='Encoding thumbnails'):
+    print('Saving image thumbnails...')
+    for i, idx in enumerate(tqdm(ptch_inds, desc='Saving thumbnails')):
         sample = ds[idx]
         img = sample['input']  # PIL Image (after resize)
         if isinstance(img, torch.Tensor):
             img = torchvision.transforms.ToPILImage()(img)
-        thumbnails.append(encode_thumbnail(img))
-
-    return thumbnails
+        img.save(os.path.join(thumbs_dir, f'{i:04d}.jpg'), format='JPEG', quality=70)
 
 
 def main():
@@ -111,6 +110,8 @@ def main():
     parser.add_argument('--thumb_size', type=int, default=280)
     parser.add_argument('--clf_method', type=str, default='knn', choices=['knn', 'lin'],
                         help='Classifier for scatter coloring: knn or lin (linear probe)')
+    parser.add_argument('--lazy_load', action='store_true',
+                        help='Lazy-load large data files for faster initial page render')
     args = parser.parse_args()
 
     # UI sizing config — edit here or load from JSON later
@@ -181,10 +182,10 @@ def main():
     print(f'Loaded {N} samples across {len(layer_names)} layers')
     print(f'Layer pairs with RDX data: {len(rdx_data)}')
 
-    # 2. Load image thumbnails
-    thumbnails = load_images_as_thumbnails(args.data_root, args.num_samples,
-                                           probe_num_samples=args.probe_num_samples,
-                                           thumb_size=args.thumb_size)
+    # 2. Save image thumbnails to disk
+    save_images_as_thumbnails(args.data_root, args.output_dir, args.num_samples,
+                              probe_num_samples=args.probe_num_samples,
+                              thumb_size=args.thumb_size)
 
     # 3. Compute AlignedUMAP
     embeddings = compute_aligned_umap(acts, layer_names, mode=ui_config.get('umap_mode', 'pairwise'))
@@ -206,9 +207,9 @@ def main():
     # 8. Generate HTML
     output_path = os.path.join(args.output_dir, 'interactive_viz.html')
     generate_html(embeddings, layer_names, rdx_data, neighbor_data,
-                  thumbnails, labels, output_path, ui_config=ui_config,
+                  'thumbs', labels, output_path, ui_config=ui_config,
                   matrix_data=matrix_data, ranking_data=ranking_data,
-                  **{knn_kw: clf_data})
+                  lazy_load=args.lazy_load, **{knn_kw: clf_data})
 
 
 if __name__ == '__main__':

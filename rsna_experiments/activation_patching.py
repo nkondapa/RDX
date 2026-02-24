@@ -20,9 +20,9 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from umap import UMAP
 from matplotlib import colors
-
+import open_clip.timm_model
 from src.utils.hooks import ActivationHookV2
-from src.rdx import RDX
+from src.rdx_v2 import RDX
 from rsna_experiments.utils import (
     parse_args, load_model, load_dataset,
     cls_token, find_transformer_blocks, cache_activations,
@@ -62,31 +62,31 @@ def cka_similarity(m0_embs, m1_embs):
     return similarity.item()
 
 
-def relative_neighborhood_distance_delta(base_embs, patched_embs, target_embs, rdx_data, rdx_fig_data, k=16):
+def relative_neighborhood_distance_delta(base_embs, patched_embs, target_embs, rdx_data, rdx_fig_data, k=16,
+                                          n_clusters=None):
     # base_dist = torch.cdist(base_embs, base_embs)
     patched_dist = torch.cdist(patched_embs, patched_embs)
     # target_dist = torch.cdist(target_embs, target_embs)
     base_dist = rdx_data['graph_dict']['r0_dm']
     patched_dist = patched_dist.argsort(-1).argsort(-1).type(torch.float32)
     target_dist = rdx_data['graph_dict']['r1_dm']
-    # dist1 = base_dist.argsort(-1).argsort(-1)
-    # dist2 = target_dist.argsort(-1).argsort(-1)
-    # for di in ['01', '10']:
-    #     for sel_inds in rdx_fig_data[di]['selected_indices']:
-    #         print(sel_inds)
-    #         if di == '01':
-    #             print(dist1[sel_inds[0], sel_inds])
-    #         else:
-    #             print(dist2[sel_inds[0], sel_inds])
-    #     print()
 
     scores = []
     selectivity_scores = []
     for direct in ['01', '10']:
-        # sel_inds_per_cluster = rdx_fig_data[direct]['selected_indices']
         array = rdx_data['cluster_dict'][f'{direct}']['cluster_labels']
-        sel_inds_per_cluster = [((array == i).nonzero()[0], (array != i).nonzero()[0]) for i in np.unique(array)]
-        for i, (sel_inds, not_sel_inds) in enumerate(sel_inds_per_cluster[1:]):
+        existing_labels = set(np.unique(array)) - {0}  # non-null labels that exist
+
+        # Iterate over fixed range 1..n_clusters so output length is always consistent
+        cluster_range = range(1, n_clusters + 2) if n_clusters is not None else sorted(existing_labels)
+        for ci in cluster_range:
+            if ci not in existing_labels:
+                # Cluster was merged into null — output 0
+                scores.append(0.0)
+                selectivity_scores.append(0.0)
+                continue
+            sel_inds = (array == ci).nonzero()[0]
+            not_sel_inds = (array != ci).nonzero()[0]
             patched_sel_dist = patched_dist[sel_inds][:, sel_inds].mean()
             target_sel_dist = target_dist[sel_inds][:, sel_inds].mean()
             base_sel_dist = base_dist[sel_inds][:, sel_inds].mean()
@@ -94,18 +94,12 @@ def relative_neighborhood_distance_delta(base_embs, patched_embs, target_embs, r
             target_nsel_dist = target_dist[not_sel_inds][:, not_sel_inds]
             non_cluster_change = torch.abs(target_nsel_dist - patched_nsel_dist).mean() + 1e-8
             if direct == '01':
-                # expectation : target dist is larger than base dist
-                # positive if patch made samples closer together, means head is more important
                 rdx_nb_dd = -1 * (patched_sel_dist - target_sel_dist)
             else:
-                # expectation : target dist is smaller than base dist
-                # positive if patch made samples further apart, means head is more important
                 rdx_nb_dd = (patched_sel_dist - target_sel_dist)
             selectivity_score = rdx_nb_dd / non_cluster_change
             selectivity_scores.append(selectivity_score.item())
             scores.append(rdx_nb_dd.item())
-
-            # print(direct, i, patched_sel_dist.item(), target_sel_dist.item(), base_sel_dist.item(), rdx_nb_dd)
 
     return scores, selectivity_scores
 
@@ -113,7 +107,7 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
                                fig_output_dir=None, show=True, save=False):
 
     num_perms = 1000
-    n_clusters = rdx_params['n_clusters']
+    n_clusters = rdx_params['n_clusters'] + 1
     rng = np.random.default_rng(seed=42)
     nc = np.zeros(shape=(2, len(data['output_dict']), n_clusters + 1, 2))
     # Per-cluster enrichment: (rdx_rate, random_mean, random_std, p_value) for each cluster
@@ -165,12 +159,31 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
     layer_pair_labels = [f'{k[0].split(".")[-1]}-{k[1].split(".")[-1]}' for k in layer_pair_keys]
     n_pairs = len(layer_pair_keys)
 
+    # Build a mask of which clusters actually exist per (direction, layer_pair)
+    # cluster_exists[dir_idx, pair_idx, cluster_idx_0based] = True if non-null cluster exists
+    cluster_exists = np.zeros((2, n_pairs, n_clusters), dtype=bool)
+    for ki, key in enumerate(data['output_dict']):
+        for i, direction_str in enumerate(['01', '10']):
+            cl_labels = data['output_dict'][key]['cluster_dict'][direction_str]['cluster_labels']
+            for labi in np.unique(cl_labels):
+                if labi > 0:
+                    cluster_exists[i, ki, labi - 1] = True
+
+    # Count actual non-null clusters per (direction, layer_pair)
+    n_actual_clusters = cluster_exists.sum(axis=2)  # (2, n_pairs)
+
+    def _mask_heatmap(arr_2d, exists_2d):
+        """Set cells to NaN where cluster doesn't exist, for clean heatmap display."""
+        masked = arr_2d.astype(float).copy()
+        masked[~exists_2d] = np.nan  # arr is (n_pairs, n_clusters), exists is (n_pairs, n_clusters)
+        return masked
+
     # --- Plot 1: p-value heatmap (directions x clusters) across layer pairs ---
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     for i, direction_str in enumerate(['01', '10']):
-        # cluster_enrichment[i, :, :, 3] is the p-value; skip null cluster (index 0)
         pvals = cluster_enrichment[i, :, 1:, 3]  # (n_pairs, n_clusters)
-        im = axes[i].imshow(pvals.T, cmap='RdYlGn', vmin=0, vmax=1, aspect='auto')
+        pvals_masked = _mask_heatmap(pvals, cluster_exists[i])
+        im = axes[i].imshow(pvals_masked.T, cmap='RdYlGn', vmin=0, vmax=1, aspect='auto')
         axes[i].set_title(f'Enrichment p-value (dir={direction_str})')
         axes[i].set_xlabel('Layer Pair')
         axes[i].set_ylabel('Cluster')
@@ -179,10 +192,9 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
         axes[i].set_yticks(range(n_clusters))
         axes[i].set_yticklabels([f'C{c+1}' for c in range(n_clusters)])
         fig.colorbar(im, ax=axes[i], label='p-value')
-        # Mark significant cells
         for ki_idx in range(n_pairs):
             for ci in range(n_clusters):
-                if pvals[ki_idx, ci] < 0.05:
+                if cluster_exists[i, ki_idx, ci] and pvals[ki_idx, ci] < 0.05:
                     axes[i].text(ki_idx, ci, '*', ha='center', va='center', color='black', fontsize=12, fontweight='bold')
     plt.tight_layout()
     finish_plot(show, save, os.path.join(fig_output_dir, 'cluster_enrichment_pvalues.png') if fig_output_dir else None, fig=fig)
@@ -222,8 +234,9 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     for i, direction_str in enumerate(['01', '10']):
         enrichment = cluster_enrichment[i, :, 1:, 0] - cluster_enrichment[i, :, 1:, 1]  # (n_pairs, n_clusters)
-        vmax = np.abs(enrichment).max()
-        im = axes[i].imshow(enrichment.T, cmap='bwr', vmin=-vmax, vmax=vmax, aspect='auto')
+        enrichment_masked = _mask_heatmap(enrichment, cluster_exists[i])
+        vmax = np.nanmax(np.abs(enrichment_masked))
+        im = axes[i].imshow(enrichment_masked.T, cmap='bwr', vmin=-vmax, vmax=vmax, aspect='auto')
         axes[i].set_title(f'Enrichment (rdx - random) (dir={direction_str})')
         axes[i].set_xlabel('Layer Pair')
         axes[i].set_ylabel('Cluster')
@@ -232,10 +245,9 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
         axes[i].set_yticks(range(n_clusters))
         axes[i].set_yticklabels([f'C{c+1}' for c in range(n_clusters)])
         fig.colorbar(im, ax=axes[i], label='Rate difference')
-        # Mark significant cells
         for ki_idx in range(n_pairs):
             for ci in range(n_clusters):
-                if cluster_enrichment[i, ki_idx, ci + 1, 3] < 0.05:
+                if cluster_exists[i, ki_idx, ci] and cluster_enrichment[i, ki_idx, ci + 1, 3] < 0.05:
                     axes[i].text(ki_idx, ci, '*', ha='center', va='center', color='black', fontsize=12, fontweight='bold')
     plt.tight_layout()
     finish_plot(show, save, os.path.join(fig_output_dir, 'cluster_enrichment_diff.png') if fig_output_dir else None, fig=fig)
@@ -246,7 +258,10 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
     width = 0.35
     for i, direction_str in enumerate(['01', '10']):
         pvals = cluster_enrichment[i, :, 1:, 3]  # (n_pairs, n_clusters)
-        frac_sig = (pvals < 0.05).sum(axis=1) / n_clusters
+        # Only count significant among clusters that actually exist
+        sig_count = np.array([(pvals[ki, cluster_exists[i, ki]] < 0.05).sum() for ki in range(n_pairs)])
+        denom = np.maximum(n_actual_clusters[i], 1)
+        frac_sig = sig_count / denom
         ax.bar(x + i * width - width / 2, frac_sig, width, label=f'dir={direction_str}')
     ax.set_xlabel('Layer Pair')
     ax.set_ylabel('Fraction of clusters with p < 0.05')
@@ -306,7 +321,8 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     for i, direction_str in enumerate(['01', '10']):
         pvals = class_homogeneity[i, :, 1:, 3]  # (n_pairs, n_clusters)
-        im = axes[i].imshow(pvals.T, cmap='RdYlGn', vmin=0, vmax=1, aspect='auto')
+        pvals_masked = _mask_heatmap(pvals, cluster_exists[i])
+        im = axes[i].imshow(pvals_masked.T, cmap='RdYlGn', vmin=0, vmax=1, aspect='auto')
         axes[i].set_title(f'Class homogeneity p-value (dir={direction_str})')
         axes[i].set_xlabel('Layer Pair')
         axes[i].set_ylabel('Cluster')
@@ -317,7 +333,7 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
         fig.colorbar(im, ax=axes[i], label='p-value')
         for ki_idx in range(n_pairs):
             for ci in range(n_clusters):
-                if pvals[ki_idx, ci] < 0.05:
+                if cluster_exists[i, ki_idx, ci] and pvals[ki_idx, ci] < 0.05:
                     axes[i].text(ki_idx, ci, '*', ha='center', va='center', color='black', fontsize=12, fontweight='bold')
     plt.tight_layout()
     finish_plot(show, save, os.path.join(fig_output_dir, 'class_homogeneity_pvalues.png') if fig_output_dir else None, fig=fig)
@@ -356,8 +372,9 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     for i, direction_str in enumerate(['01', '10']):
         enrichment = class_homogeneity[i, :, 1:, 0] - class_homogeneity[i, :, 1:, 1]
-        vmax = np.abs(enrichment).max()
-        im = axes[i].imshow(enrichment.T, cmap='bwr', vmin=-vmax, vmax=vmax, aspect='auto')
+        enrichment_masked = _mask_heatmap(enrichment, cluster_exists[i])
+        vmax = np.nanmax(np.abs(enrichment_masked))
+        im = axes[i].imshow(enrichment_masked.T, cmap='bwr', vmin=-vmax, vmax=vmax, aspect='auto')
         axes[i].set_title(f'Class homogeneity enrichment (dir={direction_str})')
         axes[i].set_xlabel('Layer Pair')
         axes[i].set_ylabel('Cluster')
@@ -368,7 +385,7 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
         fig.colorbar(im, ax=axes[i], label='Majority frac difference')
         for ki_idx in range(n_pairs):
             for ci in range(n_clusters):
-                if class_homogeneity[i, ki_idx, ci + 1, 3] < 0.05:
+                if cluster_exists[i, ki_idx, ci] and class_homogeneity[i, ki_idx, ci + 1, 3] < 0.05:
                     axes[i].text(ki_idx, ci, '*', ha='center', va='center', color='black', fontsize=12, fontweight='bold')
     plt.tight_layout()
     finish_plot(show, save, os.path.join(fig_output_dir, 'class_homogeneity_enrichment.png') if fig_output_dir else None, fig=fig)
@@ -379,7 +396,9 @@ def measure_cluster_properties(rdx_params, data, probe_results, labels, probe_me
     width = 0.35
     for i, direction_str in enumerate(['01', '10']):
         pvals = class_homogeneity[i, :, 1:, 3]
-        frac_sig = (pvals < 0.05).sum(axis=1) / n_clusters
+        sig_count = np.array([(pvals[ki, cluster_exists[i, ki]] < 0.05).sum() for ki in range(n_pairs)])
+        denom = np.maximum(n_actual_clusters[i], 1)
+        frac_sig = sig_count / denom
         ax.bar(x + i * width - width / 2, frac_sig, width, label=f'dir={direction_str}')
     ax.set_xlabel('Layer Pair')
     ax.set_ylabel('Fraction of clusters with p < 0.05')
@@ -400,22 +419,28 @@ def compute_activations(visual, replaced_attn, ds, inds, args, cache_path, force
             torch.utils.data.Subset(ds, inds),
             batch_size=args.batch_size, shuffle=False, num_workers=4,
         )
-        # Collect attn head outputs via hooks: reshape (B, S, C) -> (B, S, H, D) and accumulate
-        attn_head_acts = {name: [] for name, _ in replaced_attn}
+        # Collect attn head outputs via hooks: reshape (B, S, C) -> (B, S, H, D)
+        # Only store running sum + count to compute mean, avoiding O(N*S*H*D) RAM
+        attn_head_sums = {name: None for name, _ in replaced_attn}
+        attn_head_counts = {name: 0 for name, _ in replaced_attn}
         if collect_head_acts:
             for name, m in replaced_attn:
                 num_heads, head_dim = m.num_heads, m.head_dim
-                collector = attn_head_acts[name]
 
-                def make_collect_hook(collector, num_heads, head_dim):
+                def make_collect_hook(sums, counts, key, num_heads, head_dim):
                     def collect_hook(x):
                         B, S, C = x.shape
-                        collector.append(x.reshape(B, S, num_heads, head_dim).detach().cpu().clone())
+                        batch_sum = x.reshape(B, S, num_heads, head_dim).detach().cpu().sum(dim=0)
+                        if sums[key] is None:
+                            sums[key] = batch_sum
+                        else:
+                            sums[key] += batch_sum
+                        counts[key] += B
                         return x
 
                     return collect_hook
 
-                m.register_hook('attn_output', make_collect_hook(collector, num_heads, head_dim))
+                m.register_hook('attn_output', make_collect_hook(attn_head_sums, attn_head_counts, name, num_heads, head_dim))
 
         # Collect block outputs: (N, S, D)
         block_names, block_modules = find_transformer_blocks(visual)
@@ -423,12 +448,23 @@ def compute_activations(visual, replaced_attn, ds, inds, args, cache_path, force
         block_hook.register_hooks(block_names, block_modules)
 
         # Collect pre-block embedding (input to first transformer block)
-        pre_block_name = 'trunk.embed'
+        pre_block_name = 'pre_' + block_names[0]
         pre_block_acts = []
         def pre_block_collect_hook(module, input):
             x = input[0].detach().clone().cpu()
             pre_block_acts.append(x)
         pre_block_handle = block_modules[0].register_forward_pre_hook(pre_block_collect_hook)
+
+        # Collect post-final-layer-norm activations
+        post_ln_acts = []
+        ln_module = (getattr(visual, 'ln_post', None) or getattr(visual, 'fc_norm', None) or getattr(visual, 'norm', None)
+                     or getattr(getattr(visual, 'trunk', None), 'norm', None))
+        def post_ln_collect_hook(module, input, output):
+            post_ln_acts.append(output.detach().clone().cpu())
+        post_ln_handle = ln_module.register_forward_hook(post_ln_collect_hook) if ln_module is not None else None
+
+        # Collect post-projection (final 512-dim output)
+        post_proj_acts = []
 
         # Forward pass
         all_labels = []
@@ -437,13 +473,16 @@ def compute_activations(visual, replaced_attn, ds, inds, args, cache_path, force
             for batch in tqdm(dataloader, desc='Collecting activations for patching'):
                 images = batch['input'].to(args.device)
                 all_labels.append(batch['target'])
-                visual(images)
+                out = visual(images)
+                post_proj_acts.append(out.detach().clone().cpu())
 
         labels = torch.cat(all_labels, dim=0)
 
         if collect_head_acts:
-            # Concatenate attn head outputs
-            attn_head_acts = {name: torch.cat(chunks, dim=0) for name, chunks in attn_head_acts.items()}
+            # Compute mean attn head outputs: (S, H, D) per layer
+            attn_head_acts = {name: attn_head_sums[name] / attn_head_counts[name] for name in attn_head_sums if attn_head_sums[name] is not None}
+        else:
+            attn_head_acts = {}
 
         # Concatenate block outputs
         block_hook.concatenate_layer_activations()
@@ -451,14 +490,22 @@ def compute_activations(visual, replaced_attn, ds, inds, args, cache_path, force
         block_acts = {pre_block_name: pre_block_embedding}
         block_acts.update({k: v for k, v in block_hook.layer_activations.items()})
 
+        # Concatenate post-ln and post-proj activations
+        post_ln_embedding = torch.cat(post_ln_acts, dim=0) if post_ln_acts else None
+        post_proj_embedding = torch.cat(post_proj_acts, dim=0)
+
         activations = {
-            'attn_head': attn_head_acts,  # {name: (N, S, H, D)} per-head attn output
+            'attn_head': attn_head_acts,  # {name: (S, H, D)} mean per-head attn output
             'block': block_acts,  # {name: (N, S, D)} block output
+            'post_ln': post_ln_embedding,  # (N, D) or (N, S, D) after final layer norm
+            'post_proj': post_proj_embedding,  # (N, 512) after final projection
         }
 
         # Cleanup
         block_hook.remove_hooks()
         pre_block_handle.remove()
+        if post_ln_handle is not None:
+            post_ln_handle.remove()
         for _, m in replaced_attn:
             m.clear_hooks()
 
@@ -488,6 +535,8 @@ def activation_patching(visual, train_ds, args, force_run=False):
 
     Metric - at each block, measure the top 16 nearest neighbor change for each sample (N)
     '''
+    fig_output_dir = os.path.join(args.output_dir, 'fig_outputs')
+    os.makedirs(fig_output_dir, exist_ok=True)
 
     from src.utils.hookable_timm_modules import replace_attention_modules, replace_mlp_modules
     replaced_attn = replace_attention_modules(visual)
@@ -495,6 +544,11 @@ def activation_patching(visual, train_ds, args, force_run=False):
     inds = rng.choice(len(train_ds), args.num_samples + args.probe_num_samples, replace=False)
     ptch_inds = inds[:args.num_samples]
     probe_inds = inds[args.num_samples:]
+    print(ptch_inds)
+    # [11438 26324  9111 ... 11640  1137  5165]
+
+    with open('inds_for_patching_and_probing.pkl', 'wb') as f:
+        pkl.dump({'ptch_inds': ptch_inds, 'probe_inds': probe_inds}, f)
 
     print('Computing activations for patching and probing subsets...')
     cache_path = os.path.join(args.output_dir, 'full_cache_subset.pkl')
@@ -509,17 +563,29 @@ def activation_patching(visual, train_ds, args, force_run=False):
     probe_acts = {}
     probe_results = {}
     for i, (k, v) in enumerate(activations['block'].items()):
-        acts[k] = activations['block'][k][:, -1]
-        probe_acts[k] = probe_activations['block'][k][:, -1]
+        acts[k] = activations['block'][k][:, 0]
+        probe_acts[k] = probe_activations['block'][k][:, 0]
+
+    acts['post_ln'] = activations['post_ln'][:, 0] if activations['post_ln'] is not None else activations['post_proj']
+    probe_acts['post_ln'] = probe_activations['post_ln'][:, 0] if probe_activations['post_ln'] is not None else probe_activations['post_proj']
+    acts['post_proj'] = activations['post_proj']
+    probe_acts['post_proj'] = probe_activations['post_proj']
 
     probe_results_path = os.path.join(args.output_dir, 'probe_results.pkl')
     if not os.path.exists(probe_results_path) or force_run:
-        probe_results['knn_train'] = run_knn_probes_full(probe_acts, probe_labels, 5)
+        probe_results['knn_train'] = run_knn_probes_full(probe_acts, probe_labels, 12)
         probe_results['knn_test'] = evaluate_probes(probe_results['knn_train'], acts, np.array(labels))
         probe_results['linear_train'] = run_probes_full(probe_acts, probe_labels)
         probe_results['linear_test'] = evaluate_probes(probe_results['linear_train'], acts, np.array(labels))
         with open(probe_results_path, 'wb') as f:
             pkl.dump(probe_results, f)
+        with open(os.path.join(fig_output_dir, 'accuracies.txt'), 'w') as f:
+            for probe_method in ['knn', 'linear']:
+                f.write(f"=== {probe_method.upper()} Probes ===\n")
+                for key in probe_results[f'{probe_method}_test']:
+                    f.write(f"{key} : Train {probe_results[f'{probe_method}_train'][key]['train_acc']:.4f} | "
+                            f"Test {probe_results[f'{probe_method}_test'][key]['accuracy']:.4f}\n")
+                f.write('\n')
     else:
         with open(probe_results_path, 'rb') as f:
             probe_results = pkl.load(f)
@@ -532,23 +598,35 @@ def activation_patching(visual, train_ds, args, force_run=False):
     # cross_layer_disagreement = (probe_a['trunk.blocks.0']['classifier'].predict(acts['trunk.blocks.0']) != probe_c['trunk.blocks.1']['classifier'].predict(acts['trunk.blocks.1'])).mean()
     # print(f"Same layer disagreement: {same_layer_disagreement:.3f}, Cross layer disagreement: {cross_layer_disagreement:.3f}")
 
+    clip_thresh = 1.05
+    clip_fill_val = 1
+    null_thresh = 1.1
     rdx_params = {
         "method": "rdx",
         "method_name": "rdx_nb_lb",
         "sim_function": "neighborhood",
         "diff_function": "locally_biased",
         "clustering_method": "spectral",
+        # "clustering_method": "affinity",
+        "symmetrize_diff": False,
+        "symmetrize_dm": "mean",
+        # "preprocess_clustering": {
+        #     "clip_below_thresh": True,
+        #     "clip_thresh": clip_thresh,
+        #     "clip_fill_val": clip_fill_val,
+        # },
+        "filter_thresh": null_thresh,
         "add_null_cluster": True,
         "gamma_scale": None,
         "gamma": 0.05,
         "beta": 5,
         "seed": 0,
         "guidance": None,
-        "n_clusters": 4,
+        "n_clusters": 10,
         "viz_params": {
             "show": False,
             "save": True,
-            "null_thresh": 1.5,
+            "null_thresh": null_thresh,
             "num_samples": 16,
             "grid_size": "4x4",
             "skip_low_affinity_for_summary": False,
@@ -569,31 +647,30 @@ def activation_patching(visual, train_ds, args, force_run=False):
 
     test_acc = np.array(test_acc)
     print('Test accuracy across layers:', test_acc)
+
     pred_labels = dict([(key, probe_results[f'{probe_method}_test'][key]['predictions']) for key in probe_results[f'{probe_method}_test']])
 
     data = run_rdx(rdx_params, copy.deepcopy(train_ds), acts, labels, pred_labels,
                    ptch_inds, args, force_run=False)
-
     show = True
     save = True
-    fig_output_dir = os.path.join(args.output_dir, 'fig_outputs')
-    measure_cluster_properties(rdx_params, data, probe_results, labels, probe_method=probe_method,
-                               fig_output_dir=fig_output_dir, show=show, save=save)
 
-    dist1 = torch.cdist(acts['trunk.blocks.0'], acts['trunk.blocks.0']).argsort(-1).argsort(-1)
-    dist2 = torch.cdist(acts['trunk.blocks.1'], acts['trunk.blocks.1']).argsort(-1).argsort(-1)
-    for sel_inds in data['fig_data'][('trunk.blocks.0', 'trunk.blocks.1')]['10']['selected_indices']:
+    # measure_cluster_properties(rdx_params, data, probe_results, labels, probe_method=probe_method,
+    #                            fig_output_dir=fig_output_dir, show=show, save=save)
+
+    block_names, block_modules = find_transformer_blocks(visual)
+    dist1 = torch.cdist(acts[block_names[0]], acts[block_names[0]]).argsort(-1).argsort(-1)
+    dist2 = torch.cdist(acts[block_names[1]], acts[block_names[1]]).argsort(-1).argsort(-1)
+    for sel_inds in data['fig_data'][(block_names[0], block_names[1])]['10']['selected_indices']:
         print(sel_inds)
         print(dist2[sel_inds[0], sel_inds])
 
-    # d[('trunk.blocks.0', 'trunk.blocks.1')]['01']['selected_indices']
-    block_names, block_modules = find_transformer_blocks(visual)
-    pre_block_name = 'trunk.embed'
+    pre_block_name = 'pre_' + block_names[0]
     all_layer_names = [pre_block_name] + block_names
     torch.cuda.empty_cache()
 
     ra_dict = dict(replaced_attn)
-    batch_size = 256
+    batch_size = 64
     metrics = {'cka': [], 'topkns': [], 'rdx_nb_dist_delta': [], 'rdx_nb_dist_delta_selectivity': [],
                'knn_acc': [], 'linear_acc': []}
     probe_predictions = {'knn': [], 'linear': []}
@@ -608,7 +685,7 @@ def activation_patching(visual, train_ds, args, force_run=False):
             probe_predictions[metric].append([])
 
         for head_index in range(m.num_heads):
-            patch_val = activations['attn_head'][name][:, :, head_index, :].mean(dim=0)
+            patch_val = activations['attn_head'][name][:, head_index, :]
             m.register_hook('attn_output', partial(patch_hook, head_index=head_index, patch_val=patch_val,
                                                    num_heads=m.num_heads, head_dim=m.head_dim))
             next_block_acts = []
@@ -619,17 +696,18 @@ def activation_patching(visual, train_ds, args, force_run=False):
                     next_block_acts.append(next_block_act)
                     torch.cuda.empty_cache()
             patched_acts = torch.cat(next_block_acts)
-            score = 1 - topk_neighbor_similarity(patched_acts[:, -1], activations['block'][target_layer][:, -1],
+            score = 1 - topk_neighbor_similarity(patched_acts[:, 0], activations['block'][target_layer][:, 0],
                                                  k=16)
-            cka_score = 1 - cka_similarity(patched_acts[:, -1], activations['block'][target_layer][:, -1])
+            cka_score = 1 - cka_similarity(patched_acts[:, 0], activations['block'][target_layer][:, 0])
             if bi == 0 and head_index == 10:
                 print()
-            rdx_nb_dd, rndd_ss = relative_neighborhood_distance_delta(activations['block'][input_layer][:, -1],
-                                                             patched_acts[:, -1],
-                                                             activations['block'][target_layer][:, -1],
+            rdx_nb_dd, rndd_ss = relative_neighborhood_distance_delta(activations['block'][input_layer][:, 0],
+                                                             patched_acts[:, 0],
+                                                             activations['block'][target_layer][:, 0],
                                                              data['output_dict'][(input_layer, target_layer)],
-                                                             data['fig_data'][(input_layer, target_layer)], k=16)
-            act_dict = {target_layer: patched_acts[:, -1]}
+                                                             data['fig_data'][(input_layer, target_layer)], k=16,
+                                                             n_clusters=rdx_params['n_clusters'])
+            act_dict = {target_layer: patched_acts[:, 0]}
             knn_result = evaluate_probes(probe_results['knn_train'], act_dict, np.array(labels), verbose=False)
             linear_result = evaluate_probes(probe_results['linear_train'], act_dict, np.array(labels), verbose=False)
 
@@ -649,8 +727,8 @@ def activation_patching(visual, train_ds, args, force_run=False):
 
     show = True
     save = True
-    knn_base_scores = np.array([probe_results['knn_test'][key]['accuracy'] for key in probe_results['knn_test']])[1:, None]
-    linear_base_scores = np.array([probe_results['linear_test'][key]['accuracy'] for key in probe_results['linear_test']])[1:, None]
+    knn_base_scores = np.array([probe_results['knn_test'][key]['accuracy'] for key in probe_results['knn_test']])[1:-2, None]
+    linear_base_scores = np.array([probe_results['linear_test'][key]['accuracy'] for key in probe_results['linear_test']])[1:-2, None]
     labels = ['CKA', '1 - TopKNS', 'RDX_NBDD', 'RDX_NBDD_SS', 'KNN Acc', 'Linear Acc']
     for mi, metric in enumerate(metrics):
         block_head_score = np.array(metrics[metric])
@@ -787,19 +865,20 @@ def run_rdx(rdx_params, train_ds, acts, labels, pred_labels, inds, args, force_r
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     parser = parse_args(description=__doc__)
-    parser.add_argument('--num_samples', type=int, default=1500,
+    parser.add_argument('--model_name', type=str, default='biomedclip', help='Name of the model to use')
+    parser.add_argument('--num_samples', type=int, default=2500,
                         help='Number of samples to use for patching experiments')
-    parser.add_argument('--probe_num_samples', type=int, default=1500,)
+    parser.add_argument('--probe_num_samples', type=int, default=3000,)
     parser.add_argument('--force_run', action='store_true',
                         help='Force re-computation of cached activations')
     args = parser.parse_args()
 
     if args.output_dir is None:
-        args.output_dir = 'outputs/rsna_biomedclip/activation_patching'
+        args.output_dir = f'outputs/rsna_{args.model_name}/activation_patching'
     os.makedirs(args.output_dir, exist_ok=True)
 
     # 1. Load model & dataset
-    visual, preprocess = load_model(args.device)
+    visual, preprocess = load_model(args.model_name, args.device)
     train_ds = load_dataset(args.data_root, preprocess)
 
     # # 2. Discover transformer blocks
@@ -809,7 +888,6 @@ def main():
     #     print(f'  {n}')
 
     # 3. Activation patching
-
     activation_patching(visual, train_ds, args, force_run=args.force_run)
 
 
