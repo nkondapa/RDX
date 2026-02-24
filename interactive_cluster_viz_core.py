@@ -120,8 +120,6 @@ def precompute_neighbor_data(acts, layer_names, rdx_data, K=8, **kwargs):
                 scattered_dist, clustered_dist = r1_dist, r0_dist
 
             for ci in unique_labels:
-                if ci == 0:  # skip null cluster
-                    continue
                 cluster_mask = cl_labels == ci
                 cluster_indices = np.where(cluster_mask)[0]
 
@@ -142,17 +140,22 @@ def precompute_neighbor_data(acts, layer_names, rdx_data, K=8, **kwargs):
                     r1_nn_in_cl = [int(j) for j in r1_nn if cl_labels[j] == ci]
                     r1_nn_not_cl = [int(j) for j in r1_nn if cl_labels[j] != ci]
 
-                    # RDX cluster: K nearest same-cluster in clustered repr
-                    cl_d = clustered_dist[img_idx].clone()
-                    cl_d[img_idx] = float('inf')
-                    cl_d[~torch.tensor(cluster_mask)] = float('inf')
-                    rdx_nn = cl_d.argsort()[:K].tolist()
-                    rdx_nn = [int(j) for j in rdx_nn if cl_d[j] < float('inf')]
+                    if ci == 0:
+                        # Null cluster: no RDX cluster neighbors
+                        rdx_was_near = []
+                        rdx_was_far = []
+                    else:
+                        # RDX cluster: K nearest same-cluster in clustered repr
+                        cl_d = clustered_dist[img_idx].clone()
+                        cl_d[img_idx] = float('inf')
+                        cl_d[~torch.tensor(cluster_mask)] = float('inf')
+                        rdx_nn = cl_d.argsort()[:K].tolist()
+                        rdx_nn = [int(j) for j in rdx_nn if cl_d[j] < float('inf')]
 
-                    # Split RDX group by scattered repr spatial NN membership
-                    scattered_nn_set = set(r0_nn if direction == '10' else r1_nn)
-                    rdx_was_near = [j for j in rdx_nn if j in scattered_nn_set]
-                    rdx_was_far = [j for j in rdx_nn if j not in scattered_nn_set]
+                        # Split RDX group by scattered repr spatial NN membership
+                        scattered_nn_set = set(r0_nn if direction == '10' else r1_nn)
+                        rdx_was_near = [j for j in rdx_nn if j in scattered_nn_set]
+                        rdx_was_far = [j for j in rdx_nn if j not in scattered_nn_set]
 
                     neighbor_data[pair_key][direction][img_idx_int] = {
                         'cluster': int(ci),
@@ -233,8 +236,6 @@ def precompute_matrix_data(rdx_data, layer_names, K_matrix=16):
                 clustered_dm = r0_dm
 
             for ci in unique_labels:
-                if ci == 0:
-                    continue
                 cluster_mask = cl_labels == ci
                 cluster_indices = np.where(cluster_mask)[0]
 
@@ -251,12 +252,16 @@ def precompute_matrix_data(rdx_data, layer_names, K_matrix=16):
                     r1_d[img_idx] = float('inf')
                     r1_nn = r1_d.argsort()[:K_matrix].tolist()
 
-                    # RDX cluster NN: top K_matrix nearest same-cluster in clustered repr
-                    cl_d = clustered_dm[img_idx].clone()
-                    cl_d[img_idx] = float('inf')
-                    cl_d[~torch.tensor(cluster_mask)] = float('inf')
-                    rdx_nn = cl_d.argsort()[:K_matrix].tolist()
-                    rdx_nn = [int(j) for j in rdx_nn if cl_d[j] < float('inf')]
+                    if ci == 0:
+                        # Null cluster: no RDX cluster neighbors
+                        rdx_nn = []
+                    else:
+                        # RDX cluster NN: top K_matrix nearest same-cluster in clustered repr
+                        cl_d = clustered_dm[img_idx].clone()
+                        cl_d[img_idx] = float('inf')
+                        cl_d[~torch.tensor(cluster_mask)] = float('inf')
+                        rdx_nn = cl_d.argsort()[:K_matrix].tolist()
+                        rdx_nn = [int(j) for j in rdx_nn if cl_d[j] < float('inf')]
 
                     def extract_values(indices):
                         if not indices:
@@ -331,8 +336,6 @@ def precompute_ranking_data(rdx_data, layer_names, K_matrix=16):
             entries = []
             unique_labels = np.unique(cl_labels)
             for ci in unique_labels:
-                if ci == 0:
-                    continue
                 cluster_indices = np.where(cl_labels == ci)[0]
                 for img_idx in cluster_indices:
                     # Find top-K nearest by spatial distance in clustered repr
@@ -354,6 +357,93 @@ def precompute_ranking_data(rdx_data, layer_names, K_matrix=16):
             ranking_data[pair_key][direction] = entries
 
     return ranking_data
+
+
+def precompute_classifier_labels(acts, layer_names, labels, method='knn', K_knn=8):
+    """Compute per-layer classifier predictions using KNN or a linear probe.
+
+    Args:
+        acts: dict mapping layer name to (N, D) activation arrays.
+        layer_names: list of layer names.
+        labels: ground-truth labels (length N).
+        method: 'knn' for K-nearest-neighbor vote, 'lin' for logistic regression.
+        K_knn: number of neighbors (only used when method='knn').
+
+    Returns:
+        clf_data[layer_name] = {
+            'predictions': list of predicted labels,
+            'correct': list of bools,
+            'knn_type': 'binary' or 'multiclass',
+            # binary only:
+            'tp_fp_tn_fn': list of 'tp'/'fp'/'tn'/'fn',
+        }
+    """
+    print(f'Precomputing classifier labels (method={method})...')
+
+    labels_arr = np.asarray(labels)
+    unique_labels = np.unique(labels_arr)
+    knn_type = 'binary' if len(unique_labels) == 2 else 'multiclass'
+    positive_class = max(unique_labels) if knn_type == 'binary' else None
+
+    clf_data = {}
+    for ln in layer_names:
+        X = acts[ln].astype(np.float32)
+
+        if method == 'knn':
+            from sklearn.neighbors import NearestNeighbors
+            from collections import Counter
+            nn = NearestNeighbors(n_neighbors=K_knn + 1, metric='euclidean')
+            nn.fit(X)
+            _, indices = nn.kneighbors(X)
+            neighbor_indices = indices[:, 1:]
+            predictions = []
+            for i in range(len(labels_arr)):
+                neighbor_labels = labels_arr[neighbor_indices[i]]
+                counts = Counter(neighbor_labels.tolist())
+                pred = counts.most_common(1)[0][0]
+                predictions.append(pred)
+            predictions = np.array(predictions)
+
+        elif method == 'lin':
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.model_selection import cross_val_predict
+            clf = LogisticRegression(max_iter=1000, solver='lbfgs', C=1.0)
+            predictions = cross_val_predict(clf, X, labels_arr, cv=5)
+
+        else:
+            raise ValueError(f"Unknown method '{method}', expected 'knn' or 'lin'")
+
+        predictions = np.asarray(predictions)
+        correct = (predictions == labels_arr).tolist()
+
+        entry = {
+            'predictions': predictions.tolist(),
+            'correct': correct,
+            'knn_type': knn_type,
+        }
+
+        if knn_type == 'binary':
+            tp_fp_tn_fn = []
+            for i in range(len(labels_arr)):
+                gt = labels_arr[i]
+                pred = predictions[i]
+                if gt == positive_class and pred == positive_class:
+                    tp_fp_tn_fn.append('tp')
+                elif gt != positive_class and pred == positive_class:
+                    tp_fp_tn_fn.append('fp')
+                elif gt != positive_class and pred != positive_class:
+                    tp_fp_tn_fn.append('tn')
+                else:
+                    tp_fp_tn_fn.append('fn')
+            entry['tp_fp_tn_fn'] = tp_fp_tn_fn
+
+        clf_data[ln] = entry
+
+    return clf_data
+
+
+# Keep old name as alias for backwards compatibility
+precompute_knn_labels = precompute_classifier_labels
 
 
 # ---------------------------------------------------------------------------
@@ -695,11 +785,15 @@ function showMatrixAnalysis(imgIdx) {
         '<div class="info">Image #' + imgIdx + ' | Label: ' + LABELS[imgIdx] + ' | Cluster: ' + md.cluster + '</div>' +
         '</div>';
 
-    var groupDefs = [
+    var allGroupDefs = [
         {key: 'r0_nn', label: pair.ln1 + ' Spatial Neighbors (K=' + K_matrix + ')'},
         {key: 'rdx_nn', label: 'RDX Cluster Neighbors (K=' + K_matrix + ')'},
         {key: 'r1_nn', label: pair.ln2 + ' Spatial Neighbors (K=' + K_matrix + ')'},
     ];
+    // Skip RDX cluster group for null cluster points
+    var groupDefs = md.cluster === 0
+        ? allGroupDefs.filter(function(gd) { return gd.key !== 'rdx_nn'; })
+        : allGroupDefs;
 
     // Compute global min/max for dm and am values across all groups for normalization
     var amMin = Infinity, amMax = -Infinity;
@@ -776,6 +870,7 @@ function showMatrixAnalysis(imgIdx) {
         }
 
         // Diff row
+        if (g.diff && g.diff.length > 0) {
         html += '<div class="matrix-label">diff</div><div class="matrix-row">';
         g.diff.forEach(function(v) {
             var bg = diffColor(v);
@@ -783,6 +878,7 @@ function showMatrixAnalysis(imgIdx) {
             html += '<div class="matrix-val" style="background:' + bg + ';color:' + fg + '">' + v.toFixed(2) + '</div>';
         });
         html += '</div>';
+        }
 
         // Affinity row
         // html += '<div class="matrix-label">affinity</div><div class="matrix-row">';
@@ -804,7 +900,8 @@ function showMatrixAnalysis(imgIdx) {
 
 
 def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbnails, labels,
-                              output_path, ui_config=None, matrix_data=None, ranking_data=None):
+                              output_path, ui_config=None, matrix_data=None, ranking_data=None,
+                              knn_data=None, lin_data=None):
     """Generate HTML with side-by-side pre/post scatter + animated transition mode."""
     print('Generating transition HTML...')
 
@@ -1039,6 +1136,8 @@ const CLUSTER_DATA = {json.dumps(cluster_data)};
 const NEIGHBOR_DATA = {json.dumps(neighbor_data)};
 const MATRIX_DATA = {json.dumps(matrix_data or {})};
 const RANKING_DATA = {json.dumps(ranking_data or {})};
+const KNN_DATA = {json.dumps(knn_data or {})};
+const LIN_DATA = {json.dumps(lin_data or {})};
 const LABELS = {json.dumps(labels_list)};
 const LAYER_PAIRS = {json.dumps(layer_pairs)};
 const UI = {json.dumps(c)};
@@ -1075,6 +1174,23 @@ LAYER_PAIRS.forEach((p, i) => {{
     opt.textContent = L(p).pairLabel;
     select.appendChild(opt);
 }});
+
+// Add KNN and LIN options to color-mode dropdown (one per layer that has data)
+(function() {{
+    const colorSel = document.getElementById('color-mode-select');
+    Object.keys(KNN_DATA).forEach(ln => {{
+        const opt = document.createElement('option');
+        opt.value = 'knn:' + ln;
+        opt.textContent = 'KNN (' + ln + ')';
+        colorSel.appendChild(opt);
+    }});
+    Object.keys(LIN_DATA).forEach(ln => {{
+        const opt = document.createElement('option');
+        opt.value = 'lin:' + ln;
+        opt.textContent = 'Linear (' + ln + ')';
+        colorSel.appendChild(opt);
+    }});
+}})();
 
 function getPairKey() {{
     const idx = parseInt(select.value);
@@ -1401,8 +1517,105 @@ function buildAffTraces(emb) {{
     return buildScalarTraces(emb, 'nhood_am_sum', 'YlOrRd', null, 'NBHD Aff Sum');
 }}
 
+// Build traces colored by classifier (KNN or linear) result
+function buildKnnTraces(emb, layerName, dataSource) {{
+    const kd = dataSource[layerName];
+    if (!kd) return buildLabelTraces(emb);  // fallback
+
+    const N = LABELS.length;
+    const traces = [];
+
+    if (kd.knn_type === 'binary') {{
+        // Group by tp/fp/tn/fn
+        const KNN_COLORS = {{tp: '#2ca02c', fp: '#d62728', tn: '#1f77b4', fn: '#ff7f0e'}};
+        const KNN_NAMES = {{tp: 'TP', fp: 'FP', tn: 'TN', fn: 'FN'}};
+        const groups = {{tp: {{x:[], y:[], idx:[]}}, fp: {{x:[], y:[], idx:[]}},
+                         tn: {{x:[], y:[], idx:[]}}, fn: {{x:[], y:[], idx:[]}}}};
+        for (let i = 0; i < N; i++) {{
+            const cat = kd.tp_fp_tn_fn[i];
+            groups[cat].x.push(emb.x[i]);
+            groups[cat].y.push(emb.y[i]);
+            groups[cat].idx.push(i);
+        }}
+        ['tp', 'fp', 'tn', 'fn'].forEach(cat => {{
+            const g = groups[cat];
+            if (g.x.length === 0) return;
+            traces.push({{
+                x: g.x, y: g.y,
+                customdata: g.idx,
+                mode: 'markers', type: 'scatter',
+                marker: {{size: UI.marker_cluster_size, color: KNN_COLORS[cat], opacity: UI.marker_cluster_opacity}},
+                name: KNN_NAMES[cat],
+                hovertemplate: 'idx: %{{customdata}}<br>KNN: ' + KNN_NAMES[cat] +
+                    '<br>pred: %{{text}}<extra></extra>',
+                text: g.idx.map(i => kd.predictions[i].toString()),
+            }});
+        }});
+    }} else {{
+        // Multiclass: group by (label, correct/incorrect)
+        const groupMap = {{}};
+        for (let i = 0; i < N; i++) {{
+            const lbl = LABELS[i];
+            const ok = kd.correct[i];
+            const key = lbl + (ok ? '_correct' : '_incorrect');
+            if (!groupMap[key]) groupMap[key] = {{
+                x:[], y:[], idx:[], lbl: lbl, correct: ok,
+                color: LABEL_COLOR_MAP[lbl] || '#888',
+            }};
+            groupMap[key].x.push(emb.x[i]);
+            groupMap[key].y.push(emb.y[i]);
+            groupMap[key].idx.push(i);
+        }}
+        // Sort keys so correct comes before incorrect for each label
+        Object.keys(groupMap).sort().forEach(key => {{
+            const g = groupMap[key];
+            const suffix = g.correct ? 'correct' : 'incorrect';
+            traces.push({{
+                x: g.x, y: g.y,
+                customdata: g.idx,
+                mode: 'markers', type: 'scatter',
+                marker: {{
+                    size: UI.marker_cluster_size,
+                    color: g.color,
+                    opacity: UI.marker_cluster_opacity,
+                    symbol: g.correct ? 'circle' : 'x',
+                }},
+                name: `${{g.lbl}} (${{suffix}})`,
+                hovertemplate: 'idx: %{{customdata}}<br>label: ' + g.lbl +
+                    '<br>pred: %{{text}}<br>' + suffix + '<extra></extra>',
+                text: g.idx.map(i => kd.predictions[i].toString()),
+            }});
+        }});
+    }}
+
+    // Highlight trace
+    traces.push({{
+        x: [], y: [],
+        mode: 'markers', type: 'scatter',
+        marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
+                  line: {{color: '#fff', width: 3}}}},
+        name: 'selected',
+        showlegend: false,
+        hoverinfo: 'skip',
+    }});
+    // Matrix group highlight trace
+    traces.push({{
+        x: [], y: [],
+        mode: 'markers', type: 'scatter',
+        marker: {{size: UI.marker_cluster_size + 6, color: 'rgba(0,0,0,0)',
+                  line: {{color: '#e9b450', width: 2.5}}}},
+        name: 'matrix-group',
+        showlegend: false,
+        hoverinfo: 'skip',
+    }});
+
+    return traces;
+}}
+
 // Dispatch to the right trace builder based on colorMode
 function buildColoredTraces(emb, clLabels) {{
+    if (colorMode.startsWith('knn:')) return buildKnnTraces(emb, colorMode.slice(4), KNN_DATA);
+    if (colorMode.startsWith('lin:')) return buildKnnTraces(emb, colorMode.slice(4), LIN_DATA);
     if (colorMode === 'label') return buildLabelTraces(emb);
     if (colorMode === 'diff') return buildDiffTraces(emb);
     if (colorMode === 'aff') return buildAffTraces(emb);
@@ -1766,6 +1979,8 @@ function showNeighborAnalysis(imgIdx) {{
     // Legend
     html += `<div class="legend">`;
     groups.forEach(g => {{
+        const isRdxGroup = g.items.some(item => item.key === 'rdx_was_near' || item.key === 'rdx_was_far');
+        if (isRdxGroup && nbData.cluster === 0) return;
         g.items.forEach(item => {{
             html += `<div class="legend-item"><div class="legend-swatch" style="background:${{item.color}}"></div>${{item.label}}</div>`;
         }});
@@ -1774,6 +1989,10 @@ function showNeighborAnalysis(imgIdx) {{
 
     // Groups
     groups.forEach((g, gi) => {{
+        // Skip RDX cluster groups for null cluster points
+        const isRdxGroup = g.items.some(item => item.key === 'rdx_was_near' || item.key === 'rdx_was_far');
+        if (isRdxGroup && nbData.cluster === 0) return;
+
         const groupIndices = [];
         g.items.forEach(item => {{
             (nbData[item.key] || []).forEach(j => {{ groupIndices.push(j); }});

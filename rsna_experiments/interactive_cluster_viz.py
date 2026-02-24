@@ -22,6 +22,7 @@ from interactive_cluster_viz_core import (
     precompute_neighbor_data,
     precompute_matrix_data,
     precompute_ranking_data,
+    precompute_classifier_labels,
     generate_html,
 )
 from rsna_experiments.utils import load_dataset
@@ -108,6 +109,8 @@ def main():
     parser.add_argument('--K_matrix', type=int, default=12,
                         help='Number of neighbors for matrix view tab')
     parser.add_argument('--thumb_size', type=int, default=280)
+    parser.add_argument('--clf_method', type=str, default='knn', choices=['knn', 'lin'],
+                        help='Classifier for scatter coloring: knn or lin (linear probe)')
     args = parser.parse_args()
 
     # UI sizing config — edit here or load from JSON later
@@ -195,11 +198,17 @@ def main():
     # 6. Precompute ranking data
     ranking_data = precompute_ranking_data(rdx_data, layer_names, K_matrix=args.K_matrix)
 
-    # 7. Generate HTML
+    # 7. Precompute classifier labels
+    clf_data = precompute_classifier_labels(acts, layer_names, labels,
+                                            method=args.clf_method, K_knn=args.K)
+    knn_kw = 'knn_data' if args.clf_method == 'knn' else 'lin_data'
+
+    # 8. Generate HTML
     output_path = os.path.join(args.output_dir, 'interactive_viz.html')
     generate_html(embeddings, layer_names, rdx_data, neighbor_data,
                   thumbnails, labels, output_path, ui_config=ui_config,
-                  matrix_data=matrix_data, ranking_data=ranking_data)
+                  matrix_data=matrix_data, ranking_data=ranking_data,
+                  **{knn_kw: clf_data})
 
 
 if __name__ == '__main__':
