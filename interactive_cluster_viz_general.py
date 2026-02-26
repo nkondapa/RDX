@@ -227,14 +227,18 @@ def main():
 
 
     # 3. Save thumbnails to disk
-    output_dir = os.path.dirname(args.output_path or os.path.join(args.rdx_output_dir, 'interactive_viz.html'))
+    if args.output_path is not None:
+        viz_dir = os.path.dirname(args.output_path)
+    else:
+        viz_dir = os.path.join(args.rdx_output_dir, 'interactive_viz')
+    os.makedirs(viz_dir, exist_ok=True)
     if args.image_paths is not None:
-        labels = save_thumbnails_from_paths(args.image_paths, output_dir, data_root=args.data_root,
+        labels = save_thumbnails_from_paths(args.image_paths, viz_dir, data_root=args.data_root,
                                             thumb_size=args.thumb_size)
     else:
         # Generate placeholder thumbnails (gray squares)
         print('No image paths provided, saving placeholder thumbnails...')
-        thumbs_dir = os.path.join(output_dir, 'thumbs')
+        thumbs_dir = os.path.join(viz_dir, 'thumbs')
         os.makedirs(thumbs_dir, exist_ok=True)
         placeholder = Image.new('RGB', (args.thumb_size, args.thumb_size), (128, 128, 128))
         for i in range(N):
@@ -261,7 +265,7 @@ def main():
     knn_kw = 'knn_data' if args.clf_method == 'knn' else 'lin_data'
 
     # 9. Generate HTML
-    output_path = args.output_path or os.path.join(args.rdx_output_dir, 'interactive_viz.html')
+    output_path = args.output_path or os.path.join(viz_dir, 'index.html')
     generate_html(embeddings, layer_names, rdx_data, neighbor_data,
                   'thumbs', labels, output_path, ui_config=ui_config,
                   matrix_data=matrix_data, ranking_data=ranking_data,

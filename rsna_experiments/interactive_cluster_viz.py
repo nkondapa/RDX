@@ -183,7 +183,9 @@ def main():
     print(f'Layer pairs with RDX data: {len(rdx_data)}')
 
     # 2. Save image thumbnails to disk
-    save_images_as_thumbnails(args.data_root, args.output_dir, args.num_samples,
+    viz_dir = os.path.join(args.output_dir, 'interactive_viz')
+    os.makedirs(viz_dir, exist_ok=True)
+    save_images_as_thumbnails(args.data_root, viz_dir, args.num_samples,
                               probe_num_samples=args.probe_num_samples,
                               thumb_size=args.thumb_size)
 
@@ -205,7 +207,7 @@ def main():
     knn_kw = 'knn_data' if args.clf_method == 'knn' else 'lin_data'
 
     # 8. Generate HTML
-    output_path = os.path.join(args.output_dir, 'interactive_viz.html')
+    output_path = os.path.join(viz_dir, 'index.html')
     generate_html(embeddings, layer_names, rdx_data, neighbor_data,
                   'thumbs', labels, output_path, ui_config=ui_config,
                   matrix_data=matrix_data, ranking_data=ranking_data,

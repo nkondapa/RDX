@@ -61,12 +61,12 @@ def compute_aligned_umap(acts, layer_names, mode='global'):
         for i in range(len(layer_names) - 1):
             ln1, ln2 = layer_names[i], layer_names[i + 1]
             pair_acts = [acts[ln1].astype(np.float32), acts[ln2].astype(np.float32)]
-            aligned = AlignedUMAP(n_components=2, n_neighbors=15, min_dist=0.1,
-                                  random_state=42, alignment_window_size=1)
-            pair_embs = aligned.fit_transform(pair_acts, relations=relations)
+            # aligned = AlignedUMAP(n_components=2, n_neighbors=15, min_dist=0.1,
+            #                       random_state=42, alignment_window_size=1)
+            # pair_embs = aligned.fit_transform(pair_acts, relations=relations)
 
-            # pca = PCA(2)
-            # pair_embs = [pca.fit_transform(pair_acts[0]), pca.fit_transform(pair_acts[1])]
+            pca = PCA(2)
+            pair_embs = [pca.fit_transform(pair_acts[0]), pca.fit_transform(pair_acts[1])]
             # tsne = TSNE(2, perplexity=16, early_exaggeration=12, verbose=1)
             # red0 = tsne.fit_transform(pair_acts[0])
             # tsne = TSNE(2, perplexity=16, early_exaggeration=12, verbose=1)
@@ -633,6 +633,7 @@ function selectRank(ri) {
     updateRankLabel();
     var entry = ranking[ri];
     lastClickedIdx = entry.idx;
+    document.getElementById('save-snapshot-btn').style.display = '';
     if (activeTab === 'matrix') showMatrixAnalysis(entry.idx);
     else showNeighborAnalysis(entry.idx);
     // Update scatter highlight
@@ -782,7 +783,7 @@ function showMatrixAnalysis(imgIdx) {
 
     var K_matrix = UI.K_matrix || 16;
     var html = '<div class="clicked-img">' +
-        '<img src="' + thumbSrc(imgIdx) + '" style="cursor:pointer" onclick="showModalImage(' + imgIdx + ')">' +
+        '<img src="' + thumbSrc(imgIdx) + '" style="cursor:pointer" onclick="showSingleModal(' + imgIdx + ')">' +
         '<div class="info">Image #' + imgIdx + ' | Label: ' + LABELS[imgIdx] + ' | Cluster: ' + md.cluster + '</div>' +
         '</div>';
 
@@ -847,7 +848,7 @@ function showMatrixAnalysis(imgIdx) {
         html += '</div>';
 
         // Distance row 0
-        if (g.dm0 && g.dm0.length > 0 && gd.key != 'r0_nn') {
+        if (g.dm0 && g.dm0.length > 0) {
             html += '<div class="matrix-label">' + lb.r0Title + ' Dist</div><div class="matrix-row">';
             g.dm0.forEach(function(v) {
                 var norm = (v - dmMin) / dmRange;
@@ -859,7 +860,7 @@ function showMatrixAnalysis(imgIdx) {
         }
         
         // Distance row 1
-        if (g.dm1 && g.dm1.length > 0 && gd.key != 'r1_nn') {
+        if (g.dm1 && g.dm1.length > 0) {
             html += '<div class="matrix-label">' + lb.r1Title + ' Dist</div><div class="matrix-row">';
             g.dm1.forEach(function(v) {
                 var norm = (v - dmMin) / dmRange;
@@ -961,6 +962,7 @@ def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbs_dir, 
 <meta charset="utf-8">
 <title>Interactive RDX Cluster Visualization</title>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 body {{ font-family: Arial, sans-serif; margin: {c['body_margin']}px; background: #1a1a2e; color: #e0e0e0; }}
 .container {{ display: flex; height: calc(100vh - {c['body_margin'] * 2 + 68}px); }}
@@ -1000,7 +1002,7 @@ body {{ font-family: Arial, sans-serif; margin: {c['body_margin']}px; background
 .legend-swatch {{ width: {c['legend_swatch']}px; height: {c['legend_swatch']}px; border-radius: 3px; }}
 h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
 #right-placeholder {{ color: #888; text-align: center; padding: 60px; font-style: italic; font-size: {c['font_placeholder']}px; }}
-.tab-bar {{ display: flex; gap: 4px; margin-bottom: 10px; }}
+.tab-bar {{ display: none; gap: 4px; margin-bottom: 10px; }}  /* hidden with single tab; set to flex when adding more tabs */
 .tab-btn {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483; padding: 8px 18px;
     border-radius: 6px 6px 0 0; cursor: pointer; font-size: {c['font_select']}px; font-weight: bold; }}
 .tab-btn.active {{ background: #533483; border-bottom-color: #16213e; }}
@@ -1101,15 +1103,15 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
     </div>
     <div class="splitter" id="splitter"></div>
     <div class="panel" id="right-panel">
-        <div class="tab-bar">
+        <div class="tab-bar" id="tab-bar">
             <button class="tab-btn active" data-tab="matrix" onclick="switchTab('matrix')">Matrix View</button>
-            <button class="tab-btn" data-tab="neighbor" onclick="switchTab('neighbor')">Neighbors</button>
         </div>
         <div id="ranking-bar">
             <button class="rank-step-btn" onclick="stepRank(-1)">&#9664;</button>
             <input type="range" id="rank-slider" min="0" max="0" value="0">
             <button class="rank-step-btn" onclick="stepRank(1)">&#9654;</button>
             <span id="rank-label"></span>
+            <button id="save-snapshot-btn" onclick="saveSnapshot()" style="display:none; background:#0f3460; color:#e0e0e0; border:1px solid #533483; padding:4px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold; white-space:nowrap;">Save Snapshot</button>
         </div>
         <div id="right-content">
             <div id="right-placeholder">Click a colored cluster point to see analysis</div>
@@ -1286,6 +1288,17 @@ function showModalImage(imgIdx) {{
     overlay.classList.add('active');
 }}
 
+function showSingleModal(imgIdx) {{
+    const overlay = document.getElementById('img-modal');
+    // Hide the selected (left) side
+    document.getElementById('modal-selected-img').style.display = 'none';
+    document.getElementById('modal-selected-label').style.display = 'none';
+    // Show only the neighbor (right) side with neutral label
+    document.getElementById('modal-neighbor-img').src = thumbSrc(imgIdx);
+    document.getElementById('modal-neighbor-label').textContent = 'Image #' + imgIdx + ' | Label: ' + LABELS[imgIdx];
+    overlay.classList.add('active');
+}}
+
 function closeModal() {{
     document.getElementById('img-modal').classList.remove('active');
     modalCells = [];
@@ -1307,6 +1320,282 @@ document.addEventListener('keydown', function(e) {{
     else if (e.key === 'ArrowLeft') {{ navigateModal(-1); e.preventDefault(); }}
     else if (e.key === 'ArrowRight') {{ navigateModal(1); e.preventDefault(); }}
 }});
+
+// ── Save Snapshot ──────────────────────────────────────────────────
+
+function gatherSnapshotData() {{
+    var pairKey = getPairKey();
+    var direction = getDirection();
+    var pair = LAYER_PAIRS[parseInt(document.getElementById('layer-pair-select').value)];
+    var lb = L(pair);
+    var md = MATRIX_DATA[pairKey] && MATRIX_DATA[pairKey][direction] && MATRIX_DATA[pairKey][direction][lastClickedIdx];
+    if (!md) return null;
+    var K_matrix = UI.K_matrix || 16;
+
+    var allGroupDefs = [
+        {{key: 'r0_nn', label: lb.r0Title + ' Spatial Neighbors (K=' + K_matrix + ')'}},
+        {{key: 'rdx_nn', label: 'RDX Cluster Neighbors (K=' + K_matrix + ')'}},
+        {{key: 'r1_nn', label: lb.r1Title + ' Spatial Neighbors (K=' + K_matrix + ')'}},
+    ];
+    var groupDefs = md.cluster === 0
+        ? allGroupDefs.filter(function(gd) {{ return gd.key !== 'rdx_nn'; }})
+        : allGroupDefs;
+
+    var dmMin = Infinity, dmMax = -Infinity;
+    groupDefs.forEach(function(gd) {{
+        var g = md[gd.key];
+        if (g && g.dm0) g.dm0.forEach(function(v) {{ if (v < dmMin) dmMin = v; if (v > dmMax) dmMax = v; }});
+        if (g && g.dm1) g.dm1.forEach(function(v) {{ if (v < dmMin) dmMin = v; if (v > dmMax) dmMax = v; }});
+    }});
+    var dmRange = dmMax - dmMin || 1;
+
+    return {{ imgIdx: lastClickedIdx, md: md, groupDefs: groupDefs, pair: pair, lb: lb,
+              pairKey: pairKey, direction: direction, K_matrix: K_matrix,
+              dmMin: dmMin, dmMax: dmMax, dmRange: dmRange }};
+}}
+
+function renderSnapshotHTML(data) {{
+    var md = data.md;
+
+    var h = '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">';
+    h += '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+    h += '<title>RDX Snapshot — Image #' + data.imgIdx + '</title>';
+    h += '<link rel="preconnect" href="https://fonts.googleapis.com">';
+    h += '<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+3:wght@300;400;600&display=swap" rel="stylesheet">';
+    h += '<style>';
+    // Blog-style variables and base
+    h += ':root {{ --bg: #fafaf8; --text: #1a1a1a; --muted: #6b6b6b; --accent: #2d5a8e; --border: #e2e2de; }}';
+    h += '* {{ margin: 0; padding: 0; box-sizing: border-box; }}';
+    h += 'body {{ background: var(--bg); color: var(--text); font-family: "Lora", Georgia, serif; font-size: 18px; line-height: 1.8; padding: 0 1.5rem; }}';
+    h += 'article {{ margin: 0 auto; padding: 2rem 1rem 3rem; }}';
+    h += 'h1 {{ font-family: "Lora", serif; font-size: 1.6rem; font-weight: 600; line-height: 1.25; margin-bottom: 0.5rem; letter-spacing: -0.01em; }}';
+    h += '.post-meta {{ font-family: "Source Sans 3", sans-serif; font-size: 0.85rem; color: var(--muted); margin-bottom: 1.5rem; }}';
+    h += '.header {{ display: flex; gap: 24px; align-items: flex-start; margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border); }}';
+    h += '.header img {{ width: 160px; height: 160px; border: 2px solid var(--accent); border-radius: 4px; cursor: pointer; }}';
+    h += '.header-info {{ font-family: "Source Sans 3", sans-serif; font-size: 0.95rem; color: var(--muted); line-height: 1.8; }}';
+    h += '.header-info strong {{ color: var(--text); }}';
+    h += 'h2 {{ font-family: "Lora", serif; font-size: 1.35rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.8rem; }}';
+    h += 'h3 {{ font-family: "Source Sans 3", sans-serif; font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-top: 2rem; margin-bottom: 0.5rem; }}';
+    h += '.group {{ margin: 1.5rem 0; }}';
+    h += '.thumbs {{ display: flex; flex-wrap: nowrap; gap: 4px; margin-top: 0.5rem; }}';
+    h += '.cell {{ display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; }}';
+    h += '.cell img {{ width: 100%; aspect-ratio: 1; cursor: pointer; border-radius: 4px; border: 1px solid var(--border); object-fit: cover; }}';
+    h += '.cell img:hover {{ border-color: var(--accent); }}';
+    h += '.cell .idx {{ font-family: "Source Sans 3", sans-serif; font-size: 0.7rem; color: var(--muted); margin-top: 2px; }}';
+    h += '.val-row {{ display: flex; flex-wrap: nowrap; gap: 4px; margin: 3px 0; }}';
+    h += '.val-row-label {{ font-family: "Source Sans 3", sans-serif; font-size: 0.78rem; color: var(--muted); font-style: italic; margin: 6px 0 2px 0; }}';
+    h += '.val {{ flex: 1; min-width: 0; height: 20px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-family: "Source Sans 3", sans-serif; font-size: 0.72rem; font-weight: 600; }}';
+    // Modal
+    h += '.modal-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; cursor: pointer; }}';
+    h += '.modal-overlay.active {{ display: flex; }}';
+    h += '.modal-pair {{ display: flex; gap: 24px; align-items: center; }}';
+    h += '.modal-cont {{ display: flex; flex-direction: column; align-items: center; gap: 8px; }}';
+    h += '.modal-cont img {{ width: 400px; height: 400px; image-rendering: pixelated; border: 3px solid #e0e0e0; border-radius: 6px; }}';
+    h += '.modal-label {{ color: #fff; font-size: 16px; background: rgba(0,0,0,0.7); padding: 6px 14px; border-radius: 4px; font-family: "Source Sans 3", sans-serif; }}';
+    h += 'footer {{ margin: 0 auto; padding: 1.5rem 1rem 2rem; border-top: 1px solid var(--border); font-family: "Source Sans 3", sans-serif; font-size: 0.82rem; color: var(--muted); }}';
+    h += '</style></head><body>';
+
+    // Modal
+    h += '<div id="snap-modal" class="modal-overlay" onclick="closeSnapModal()">';
+    h += '<div class="modal-pair" onclick="event.stopPropagation()">';
+    h += '<div class="modal-cont"><img id="snap-modal-sel"><div id="snap-modal-sel-label" class="modal-label"></div></div>';
+    h += '<div class="modal-cont"><img id="snap-modal-nb"><div id="snap-modal-nb-label" class="modal-label"></div></div>';
+    h += '</div></div>';
+
+    h += '<article>';
+    h += '<h1>RDX Neighbor Snapshot</h1>';
+    h += '<div class="post-meta">Image #' + data.imgIdx + ' &middot; Cluster ' + md.cluster + ' &middot; Direction ' + data.direction + '</div>';
+
+    // Header with selected image
+    h += '<div class="header">';
+    h += '<img src="' + thumbSrc(data.imgIdx) + '" onclick="showSingle(' + data.imgIdx + ')">';
+    h += '<div class="header-info">';
+    h += '<strong>Image #' + data.imgIdx + '</strong><br>';
+    h += 'Label: ' + LABELS[data.imgIdx] + '<br>';
+    h += 'Cluster: ' + md.cluster + '<br>';
+    h += 'Layer Pair: ' + data.lb.pairLabel + '<br>';
+    h += 'Direction: ' + data.direction;
+    h += '</div></div>';
+
+    // Groups
+    data.groupDefs.forEach(function(gd) {{
+        var g = md[gd.key];
+        h += '<div class="group"><h3>' + gd.label + '</h3>';
+        if (!g || !g.indices || g.indices.length === 0) {{
+            h += '<p style="color:var(--muted);font-style:italic">No neighbors</p></div>';
+            return;
+        }}
+
+        // Thumbnails
+        h += '<div class="thumbs" data-group="' + gd.key + '">';
+        g.indices.forEach(function(j, ki) {{
+            h += '<div class="cell" data-idx="' + j + '"><img src="' + thumbSrc(j) + '" onclick="openSnap(this,' + data.imgIdx + ',' + j + ')">';
+            h += '<span class="idx">' + j + '</span></div>';
+        }});
+        h += '</div>';
+
+        // Distance rows
+        if (g.dm0 && g.dm0.length > 0) {{
+            h += '<div class="val-row-label">' + data.lb.r0Title + ' Dist</div><div class="val-row">';
+            g.dm0.forEach(function(v) {{
+                var norm = (v - data.dmMin) / data.dmRange;
+                h += '<div class="val" style="background:' + dmColor(norm) + ';color:' + dmTextColor(norm) + '">' + v.toFixed(2) + '</div>';
+            }});
+            h += '</div>';
+        }}
+        if (g.dm1 && g.dm1.length > 0) {{
+            h += '<div class="val-row-label">' + data.lb.r1Title + ' Dist</div><div class="val-row">';
+            g.dm1.forEach(function(v) {{
+                var norm = (v - data.dmMin) / data.dmRange;
+                h += '<div class="val" style="background:' + dmColor(norm) + ';color:' + dmTextColor(norm) + '">' + v.toFixed(2) + '</div>';
+            }});
+            h += '</div>';
+        }}
+        if (g.diff && g.diff.length > 0) {{
+            h += '<div class="val-row-label">Diff</div><div class="val-row">';
+            g.diff.forEach(function(v) {{
+                h += '<div class="val" style="background:' + diffColor(v) + ';color:' + diffTextColor(v) + '">' + v.toFixed(2) + '</div>';
+            }});
+            h += '</div>';
+        }}
+        h += '</div>';
+    }});
+
+    h += '</article>';
+    h += '<footer>Generated by RDX Interactive Cluster Visualization</footer>';
+
+    // Inline JS for modal with arrow key navigation
+    h += '<script>';
+    h += 'var THUMBS_DIR = "' + THUMBS_DIR + '";';
+    h += 'function tSrc(idx) {{ return THUMBS_DIR + "/" + String(idx).padStart(4, "0") + ".jpg"; }}';
+    h += 'var LABELS_SNAP = ' + JSON.stringify(LABELS) + ';';
+    h += 'var selIdx = ' + data.imgIdx + ';';
+    h += 'var allCells = []; var curCellIdx = -1;';
+    h += 'document.querySelectorAll(".thumbs .cell").forEach(function(c) {{ allCells.push(c); }});';
+    h += 'function closeSnapModal() {{ document.getElementById("snap-modal").classList.remove("active"); curCellIdx = -1; }}';
+    h += 'function showModalAt(ci) {{';
+    h += '  if (ci < 0 || ci >= allCells.length) return;';
+    h += '  curCellIdx = ci;';
+    h += '  var idx = parseInt(allCells[ci].getAttribute("data-idx"));';
+    h += '  var m = document.getElementById("snap-modal");';
+    h += '  document.getElementById("snap-modal-sel").src = tSrc(selIdx);';
+    h += '  document.getElementById("snap-modal-sel-label").textContent = "Selected #" + selIdx + " | Label: " + LABELS_SNAP[selIdx];';
+    h += '  document.getElementById("snap-modal-sel").style.display = "";';
+    h += '  document.getElementById("snap-modal-sel-label").style.display = "";';
+    h += '  document.getElementById("snap-modal-nb").src = tSrc(idx);';
+    h += '  document.getElementById("snap-modal-nb-label").textContent = "Neighbor #" + idx + " | Label: " + LABELS_SNAP[idx];';
+    h += '  m.classList.add("active");';
+    h += '}}';
+    h += 'function openSnap(el, sIdx, nbIdx) {{';
+    h += '  var cell = el.closest(".cell");';
+    h += '  curCellIdx = allCells.indexOf(cell);';
+    h += '  showModalAt(curCellIdx);';
+    h += '}}';
+    h += 'function showSingle(idx) {{';
+    h += '  var m = document.getElementById("snap-modal");';
+    h += '  document.getElementById("snap-modal-sel").style.display = "none";';
+    h += '  document.getElementById("snap-modal-sel-label").style.display = "none";';
+    h += '  document.getElementById("snap-modal-nb").src = tSrc(idx);';
+    h += '  document.getElementById("snap-modal-nb-label").textContent = "Image #" + idx + " | Label: " + LABELS_SNAP[idx];';
+    h += '  m.classList.add("active");';
+    h += '  curCellIdx = -1;';
+    h += '}}';
+    h += 'document.addEventListener("keydown", function(e) {{';
+    h += '  var m = document.getElementById("snap-modal");';
+    h += '  if (!m.classList.contains("active")) return;';
+    h += '  if (e.key === "Escape") {{ closeSnapModal(); e.preventDefault(); }}';
+    h += '  else if (e.key === "ArrowLeft" && curCellIdx > 0) {{ showModalAt(curCellIdx - 1); e.preventDefault(); }}';
+    h += '  else if (e.key === "ArrowRight" && curCellIdx < allCells.length - 1) {{ showModalAt(curCellIdx + 1); e.preventDefault(); }}';
+    h += '}});';
+    h += '<\\/script>';
+    h += '</body></html>';
+
+    return h;
+}}
+
+function saveSnapshot() {{
+    var btn = document.getElementById('save-snapshot-btn');
+    var origText = btn.textContent;
+    btn.textContent = 'Saving...';
+    btn.disabled = true;
+
+    try {{
+        var data = gatherSnapshotData();
+        if (!data) {{
+            alert('No matrix data available for this point.');
+            return;
+        }}
+
+        // Build HTML with relative thumbs/ paths
+        var htmlString = renderSnapshotHTML(data);
+        var htmlBlob = new Blob([htmlString], {{type: 'text/html'}});
+
+        // Collect all thumbnail image elements from the current page for PNG export
+        var allIndices = [data.imgIdx];
+        data.groupDefs.forEach(function(gd) {{
+            var g = data.md[gd.key];
+            if (g && g.indices) g.indices.forEach(function(j) {{ if (allIndices.indexOf(j) === -1) allIndices.push(j); }});
+        }});
+
+        // Try to build PNGs from page images via XHR blob (works on most file:// setups)
+        var pngPromises = allIndices.map(function(idx) {{
+            return new Promise(function(resolve) {{
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', thumbSrc(idx), true);
+                xhr.responseType = 'blob';
+                xhr.onload = function() {{
+                    if (xhr.status === 0 || xhr.status === 200) resolve({{idx: idx, blob: xhr.response}});
+                    else resolve({{idx: idx, blob: null}});
+                }};
+                xhr.onerror = function() {{ resolve({{idx: idx, blob: null}}); }};
+                xhr.send();
+            }});
+        }});
+
+        Promise.all(pngPromises).then(function(results) {{
+            var zip = new JSZip();
+            zip.file('snapshot.html', htmlBlob);
+
+            // Add thumbnail images to zip
+            var hasAny = false;
+            results.forEach(function(r) {{
+                if (r.blob) {{
+                    zip.file('thumbs/' + String(r.idx).padStart(4, '0') + '.jpg', r.blob);
+                    hasAny = true;
+                }}
+            }});
+
+            if (!hasAny) {{
+                // XHR failed — just download the HTML directly
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(htmlBlob);
+                var prefix = 'snapshot_' + data.pairKey.replace('||', '_') + '_dir' + data.direction + '_img' + String(data.imgIdx).padStart(4, '0');
+                a.download = prefix + '.html';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                btn.textContent = origText;
+                btn.disabled = false;
+                return;
+            }}
+
+            var prefix = 'snapshot_' + data.pairKey.replace('||', '_') + '_dir' + data.direction + '_img' + String(data.imgIdx).padStart(4, '0');
+            zip.generateAsync({{type: 'blob'}}).then(function(zipBlob) {{
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(zipBlob);
+                a.download = prefix + '.zip';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                btn.textContent = origText;
+                btn.disabled = false;
+            }});
+        }});
+    }} catch (err) {{
+        console.error('Snapshot error:', err);
+        alert('Failed to save snapshot: ' + err.message);
+        btn.textContent = origText;
+        btn.disabled = false;
+    }}
+}}
 
 // -- Shared axis range across both repr for a pair --
 function getSharedRange(pair) {{
@@ -1702,6 +1991,7 @@ function attachClickHandler(divId) {{
         if (pt.customdata !== undefined) {{
             highlightIdx = pt.customdata;
             lastClickedIdx = pt.customdata;
+            document.getElementById('save-snapshot-btn').style.display = '';
             if (activeTab === 'neighbor') showNeighborAnalysis(highlightIdx);
             else showMatrixAnalysis(highlightIdx);
             updateHighlight();
@@ -1957,6 +2247,7 @@ function animStep() {{
 function updateView() {{
     highlightIdx = null;
     lastClickedIdx = null;
+    document.getElementById('save-snapshot-btn').style.display = 'none';
     animInitialized = false;
     updateColorModeOptions();
     updateDirectionLabels();
@@ -1990,7 +2281,7 @@ function showNeighborAnalysis(imgIdx) {{
     }}
 
     let html = `<div class="clicked-img">` +
-        `<img src="${{thumbSrc(imgIdx)}}" style="cursor:pointer" onclick="showModalImage(${{imgIdx}})">` +
+        `<img src="${{thumbSrc(imgIdx)}}" style="cursor:pointer" onclick="showSingleModal(${{imgIdx}})">` +
         `<div class="info">Image #${{imgIdx}} | Label: ${{LABELS[imgIdx]}} | Cluster: ${{nbData.cluster}}</div>` +
         `</div>`;
 
