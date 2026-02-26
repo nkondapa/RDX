@@ -127,6 +127,7 @@ def main():
         'right_min_width': 500,       # *** neighbor panel min width
         'controls_gap': 24,
         'controls_margin_bottom': 14,
+        'dark': False,
         # -- Fonts (px) --
         'font_controls': 16,
         'font_select': 15,
@@ -196,7 +197,8 @@ def main():
     neighbor_data = precompute_neighbor_data(acts, layer_names, rdx_data, K=args.K)
 
     # 5. Precompute matrix data
-    matrix_data = precompute_matrix_data(rdx_data, layer_names, K_matrix=args.K_matrix)
+    rdx_sampling = {'within_cluster_sampling': False, 'method': 'affinity'}
+    matrix_data = precompute_matrix_data(rdx_data, layer_names, K_matrix=args.K_matrix, rdx_sampling=rdx_sampling)
 
     # 6. Precompute ranking data
     ranking_data = precompute_ranking_data(rdx_data, layer_names, K_matrix=args.K_matrix)

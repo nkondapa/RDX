@@ -61,12 +61,12 @@ def compute_aligned_umap(acts, layer_names, mode='global'):
         for i in range(len(layer_names) - 1):
             ln1, ln2 = layer_names[i], layer_names[i + 1]
             pair_acts = [acts[ln1].astype(np.float32), acts[ln2].astype(np.float32)]
-            # aligned = AlignedUMAP(n_components=2, n_neighbors=15, min_dist=0.1,
-            #                       random_state=42, alignment_window_size=1)
-            # pair_embs = aligned.fit_transform(pair_acts, relations=relations)
+            aligned = AlignedUMAP(n_components=2, n_neighbors=15, min_dist=0.1,
+                                  random_state=42, alignment_window_size=1)
+            pair_embs = aligned.fit_transform(pair_acts, relations=relations)
 
-            pca = PCA(2)
-            pair_embs = [pca.fit_transform(pair_acts[0]), pca.fit_transform(pair_acts[1])]
+            # pca = PCA(2)
+            # pair_embs = [pca.fit_transform(pair_acts[0]), pca.fit_transform(pair_acts[1])]
             # tsne = TSNE(2, perplexity=16, early_exaggeration=12, verbose=1)
             # red0 = tsne.fit_transform(pair_acts[0])
             # tsne = TSNE(2, perplexity=16, early_exaggeration=12, verbose=1)
@@ -109,7 +109,6 @@ def precompute_neighbor_data(acts, layer_names, rdx_data, K=8, **kwargs):
 
         pair_key = f'{ln1}||{ln2}'
         neighbor_data[pair_key] = {'10': {}, '01': {}}
-
         for direction in ['10', '01']:
             cl_labels = rdx_data[key]['cluster_dict'][direction]['cluster_labels']
             unique_labels = np.unique(cl_labels)
@@ -171,7 +170,7 @@ def precompute_neighbor_data(acts, layer_names, rdx_data, K=8, **kwargs):
     return neighbor_data
 
 
-def precompute_matrix_data(rdx_data, layer_names, K_matrix=16):
+def precompute_matrix_data(rdx_data, layer_names, K_matrix=16, rdx_sampling=None):
     """Precompute diff and affinity matrix values for each cluster member vs its neighbors.
 
     For each cluster point, computes top-K_matrix neighbors in three groups
@@ -185,6 +184,17 @@ def precompute_matrix_data(rdx_data, layer_names, K_matrix=16):
             'r1_nn': {'indices': [...], 'diff': [...], 'am': [...]},
         }
     """
+    rdx_sampling = rdx_sampling or {}
+    wc_sampling = rdx_sampling.get('within_cluster_sampling', True)
+    samp_method = rdx_sampling.get('method', 'spatial')  # 'spatial' or 'affinity'
+    sampling_name_dict = {
+        (True, 'spatial'): 'RDX Cluster Spatial NN',
+        (True, 'affinity'): 'RDX Cluster Affinity NN',
+        (False, 'spatial'): 'RDX Spatial NN',
+        (False, 'affinity'): 'RDX Affinity NN',
+    }
+    sampling_name = sampling_name_dict.get((wc_sampling, samp_method), 'RDX Cluster NN')
+
     print('Precomputing matrix data...')
     matrix_data = {}
 
@@ -253,16 +263,26 @@ def precompute_matrix_data(rdx_data, layer_names, K_matrix=16):
                     r1_d[img_idx] = float('inf')
                     r1_nn = r1_d.argsort()[:K_matrix].tolist()
 
-                    if ci == 0:
+                    if wc_sampling and ci == 0:
                         # Null cluster: no RDX cluster neighbors
                         rdx_nn = []
                     else:
-                        # RDX cluster NN: top K_matrix nearest same-cluster in clustered repr
-                        cl_d = clustered_dm[img_idx].clone()
-                        cl_d[img_idx] = float('inf')
-                        cl_d[~torch.tensor(cluster_mask)] = float('inf')
-                        rdx_nn = cl_d.argsort()[:K_matrix].tolist()
-                        rdx_nn = [int(j) for j in rdx_nn if cl_d[j] < float('inf')]
+                        if samp_method == 'spatial':
+                            # RDX cluster NN: top K_matrix nearest same-cluster in clustered repr
+                            cl_d = clustered_dm[img_idx].clone()
+                            cl_d[img_idx] = float('inf')
+                            if wc_sampling:
+                                cl_d[~torch.tensor(cluster_mask)] = float('inf')
+                            rdx_nn = cl_d.argsort()[:K_matrix].tolist()
+                            rdx_nn = [int(j) for j in rdx_nn if cl_d[j] < float('inf')]
+                        elif samp_method == 'affinity':
+                            # RDX cluster NN: top K_matrix affinity among same-cluster in clustered repr
+                            cl_am = am_mat[img_idx].clone()
+                            cl_am[img_idx] = float('-inf')
+                            if wc_sampling:
+                                cl_am[~torch.tensor(cluster_mask)] = float('-inf')
+                            rdx_nn = cl_am.argsort(descending=True)[:K_matrix].tolist()
+                            rdx_nn = [int(j) for j in rdx_nn if cl_am[j] > float('-inf')]
 
                     def extract_values(indices):
                         if not indices:
@@ -278,12 +298,12 @@ def precompute_matrix_data(rdx_data, layer_names, K_matrix=16):
                         return result
 
                     matrix_data[pair_key][direction][img_idx_int] = {
+                        'sampling_name': sampling_name,
                         'cluster': int(ci),
                         'r0_nn': extract_values(r0_nn),
                         'rdx_nn': extract_values(rdx_nn),
                         'r1_nn': extract_values(r1_nn),
                     }
-
     return matrix_data
 
 
@@ -789,11 +809,11 @@ function showMatrixAnalysis(imgIdx) {
 
     var allGroupDefs = [
         {key: 'r0_nn', label: pair.ln1 + ' Spatial Neighbors (K=' + K_matrix + ')'},
-        {key: 'rdx_nn', label: 'RDX Cluster Neighbors (K=' + K_matrix + ')'},
+        {key: 'rdx_nn', label: md.sampling_name + ' (K=' + K_matrix + ')'},
         {key: 'r1_nn', label: pair.ln2 + ' Spatial Neighbors (K=' + K_matrix + ')'},
     ];
-    // Skip RDX cluster group for null cluster points
-    var groupDefs = md.cluster === 0
+    // Skip RDX cluster group if rdx_nn has no indices
+    var groupDefs = (!md.rdx_nn || !md.rdx_nn.indices || md.rdx_nn.indices.length === 0)
         ? allGroupDefs.filter(function(gd) { return gd.key !== 'rdx_nn'; })
         : allGroupDefs;
 
@@ -927,9 +947,28 @@ def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbs_dir, 
         'show_post_spatial_nn': True,
         'K': 8,
         'comparison_mode': 'cross_model',
+        'dark': False,
     }
     if ui_config is not None:
         c.update(ui_config)
+
+    # Theme colors
+    if c['dark']:
+        theme = {
+            'bg': '#1a1a2e', 'text': '#e0e0e0', 'muted': '#aaa', 'accent': '#5b9bd5',
+            'border': '#2a2a4a', 'panel_bg': '#16213e', 'control_bg': '#0f3460',
+            'control_border': '#533483', 'hover': '#533483',
+            'plot_bg': '#0f1a30', 'paper_bg': '#16213e', 'grid': '#2a2a4a',
+            'tick_color': '#888', 'font_color': '#e0e0e0', 'null_marker': '#444',
+        }
+    else:
+        theme = {
+            'bg': '#fafaf8', 'text': '#1a1a1a', 'muted': '#6b6b6b', 'accent': '#2d5a8e',
+            'border': '#e2e2de', 'panel_bg': '#ffffff', 'control_bg': '#f0f4f9',
+            'control_border': '#c8cdd3', 'hover': '#e8ecf1',
+            'plot_bg': '#f5f5f2', 'paper_bg': '#ffffff', 'grid': '#e2e2de',
+            'tick_color': '#6b6b6b', 'font_color': '#1a1a1a', 'null_marker': '#c0c0c0',
+        }
 
     # Prepare data (same as single mode)
     layer_pairs = []
@@ -963,91 +1002,106 @@ def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbs_dir, 
 <title>Interactive RDX Cluster Visualization</title>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+3:wght@300;400;600&display=swap" rel="stylesheet">
 <style>
-body {{ font-family: Arial, sans-serif; margin: {c['body_margin']}px; background: #1a1a2e; color: #e0e0e0; }}
+:root {{ --bg: {theme['bg']}; --text: {theme['text']}; --muted: {theme['muted']}; --accent: {theme['accent']}; --border: {theme['border']};
+    --panel-bg: {theme['panel_bg']}; --control-bg: {theme['control_bg']}; --control-border: {theme['control_border']}; --hover: {theme['hover']}; }}
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: 'Source Sans 3', 'Arial', sans-serif; margin: {c['body_margin']}px; background: var(--bg); color: var(--text); }}
 .container {{ display: flex; height: calc(100vh - {c['body_margin'] * 2 + 68}px); }}
-.panel {{ background: #16213e; border-radius: {c['panel_radius']}px; padding: {c['panel_padding']}px; }}
+.panel {{ background: var(--panel-bg); border-radius: {c['panel_radius']}px; padding: {c['panel_padding']}px;
+    border: 1px solid var(--border); }}
 #left-panel {{ flex: {c['left_flex']}; min-width: {c['left_min_width']}px; overflow-y: auto; }}
 #right-panel {{ flex: {c['right_flex']}; min-width: {c['right_min_width']}px; overflow-y: auto; }}
-.splitter {{ width: 6px; cursor: col-resize; background: #2a2a4a; border-radius: 3px;
+.splitter {{ width: 6px; cursor: col-resize; background: var(--border); border-radius: 3px;
     margin: 0 {c['panel_gap'] // 2}px; flex-shrink: 0; transition: background 0.15s; }}
-.splitter:hover, .splitter.active {{ background: #e94560; }}
+.splitter:hover, .splitter.active {{ background: var(--accent); }}
 .controls {{ display: flex; gap: {c['controls_gap']}px; align-items: center; margin-bottom: {c['controls_margin_bottom']}px; flex-wrap: wrap; }}
-.controls label {{ font-weight: bold; font-size: {c['font_controls']}px; }}
-.controls select {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483;
-    padding: 6px 12px; border-radius: 5px; font-size: {c['font_select']}px; }}
-.controls input[type="radio"] {{ width: {c['radio_size']}px; height: {c['radio_size']}px; margin: 0 4px; }}
+.controls label {{ font-weight: 600; font-size: {c['font_controls']}px; color: var(--text); }}
+.controls select {{ background: var(--control-bg); color: var(--text); border: 1px solid var(--control-border);
+    padding: 6px 12px; border-radius: 5px; font-size: {c['font_select']}px; font-family: 'Source Sans 3', sans-serif; }}
+.controls input[type="radio"] {{ width: {c['radio_size']}px; height: {c['radio_size']}px; margin: 0 4px; accent-color: var(--accent); }}
 .img-group {{ margin: 14px 0; }}
-.img-group h3 {{ margin: 6px 0; font-size: {c['font_h3']}px; }}
+.img-group h3 {{ margin: 6px 0; font-size: {c['font_h3']}px; font-family: 'Source Sans 3', sans-serif;
+    font-weight: 600; color: var(--muted); }}
 .img-grid {{ display: flex; flex-wrap: wrap; gap: {c['thumb_grid_gap']}px; }}
 .img-cell {{ position: relative; cursor: pointer; }}
-.img-cell img {{ display: block; }}
+.img-cell img {{ display: block; border-radius: 4px; border: 1px solid var(--border); }}
+.img-cell:hover img {{ border-color: var(--accent); }}
 .img-cell .border-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     box-sizing: border-box; pointer-events: none; }}
 .img-cell .idx-label {{ position: absolute; bottom: 0; right: 0; font-size: {c['font_idx_label']}px;
-    background: rgba(0,0,0,0.7); color: #fff; padding: 2px 4px; }}
+    background: rgba(0,0,0,0.6); color: #fff; padding: 2px 4px; border-radius: 0 0 4px 0; }}
 .clicked-img {{ text-align: center; margin-bottom: 14px; }}
-.clicked-img img {{ width: {c['clicked_img_size']}px; height: {c['clicked_img_size']}px; border: {c['clicked_img_border']}px solid #e94560; }}
-.clicked-img .info {{ font-size: {c['font_info']}px; margin-top: 6px; }}
+.clicked-img img {{ width: {c['clicked_img_size']}px; height: {c['clicked_img_size']}px;
+    border: {c['clicked_img_border']}px solid var(--accent); border-radius: 4px; }}
+.clicked-img .info {{ font-size: {c['font_info']}px; margin-top: 6px; color: var(--muted); }}
 .legend {{ display: flex; flex-wrap: wrap; gap: {c['legend_gap']}px; margin: 10px 0; font-size: {c['font_legend']}px; }}
 .img-modal-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; cursor: pointer; }}
 .img-modal-overlay.active {{ display: flex; }}
 .modal-pair {{ display: flex; gap: 24px; align-items: center; }}
 .modal-img-container {{ display: flex; flex-direction: column; align-items: center; gap: 8px; }}
-.modal-img-container img {{ width: {c['modal_img_size']}px; height: {c['modal_img_size']}px; image-rendering: pixelated; border: {c['modal_border']}px solid #e0e0e0; border-radius: 6px; }}
+.modal-img-container img {{ width: {c['modal_img_size']}px; height: {c['modal_img_size']}px; image-rendering: pixelated;
+    border: {c['modal_border']}px solid #e0e0e0; border-radius: 6px; }}
 .modal-label {{ color: #fff; font-size: {c['modal_font_size']}px;
-    background: rgba(0,0,0,0.7); padding: 6px 14px; border-radius: 4px; }}
+    background: rgba(0,0,0,0.7); padding: 6px 14px; border-radius: 4px; font-family: 'Source Sans 3', sans-serif; }}
 .legend-item {{ display: flex; align-items: center; gap: 5px; }}
 .legend-swatch {{ width: {c['legend_swatch']}px; height: {c['legend_swatch']}px; border-radius: 3px; }}
-h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
-#right-placeholder {{ color: #888; text-align: center; padding: 60px; font-style: italic; font-size: {c['font_placeholder']}px; }}
-.tab-bar {{ display: none; gap: 4px; margin-bottom: 10px; }}  /* hidden with single tab; set to flex when adding more tabs */
-.tab-btn {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483; padding: 8px 18px;
-    border-radius: 6px 6px 0 0; cursor: pointer; font-size: {c['font_select']}px; font-weight: bold; }}
-.tab-btn.active {{ background: #533483; border-bottom-color: #16213e; }}
-#ranking-bar {{ display: flex; align-items: center; gap: 8px; padding: 6px 0; margin-bottom: 6px;
-    border-bottom: 1px solid #2a2a4a; }}
-#ranking-bar input[type="range"] {{ flex: 1; height: 5px; cursor: pointer; accent-color: #e94560; }}
-.rank-step-btn {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483; width: 28px; height: 28px;
+h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: var(--accent); font-family: 'Lora', Georgia, serif; font-weight: 600; }}
+#right-placeholder {{ color: var(--muted); text-align: center; padding: 60px; font-style: italic; font-size: {c['font_placeholder']}px; }}
+.tab-bar {{ display: none; gap: 4px; margin-bottom: 10px; }}
+.tab-btn {{ background: var(--control-bg); color: var(--text); border: 1px solid var(--control-border); padding: 8px 18px;
+    border-radius: 6px 6px 0 0; cursor: pointer; font-size: {c['font_select']}px; font-weight: 600;
+    font-family: 'Source Sans 3', sans-serif; }}
+.tab-btn.active {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
+#ranking-bar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; margin-bottom: 6px;
+    border-bottom: 1px solid var(--border); }}
+#ranking-bar input[type="range"] {{ flex: 1; min-width: 120px; height: 5px; cursor: pointer; accent-color: var(--accent); }}
+.rank-step-btn {{ background: var(--control-bg); color: var(--text); border: 1px solid var(--control-border); width: 28px; height: 28px;
     border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center;
-    padding: 0; }}
-.rank-step-btn:hover {{ background: #533483; }}
-#rank-label {{ font-size: {c['font_idx_label'] + 2}px; color: #aaa; white-space: nowrap; }}
+    padding: 0; font-family: 'Source Sans 3', sans-serif; }}
+.rank-step-btn:hover {{ background: var(--hover); }}
+#rank-label {{ font-size: {c['font_idx_label'] + 2}px; color: var(--muted); flex-basis: 100%; }}
 .matrix-group {{ margin: 14px 0; }}
-.matrix-group h3 {{ margin: 6px 0; font-size: {c['font_h3']}px; }}
+.matrix-group h3 {{ margin: 6px 0; font-size: {c['font_h3']}px; font-family: 'Source Sans 3', sans-serif;
+    font-weight: 600; color: var(--muted); }}
 .matrix-row {{ display: flex; flex-wrap: wrap; gap: 4px; align-items: flex-end; margin: 4px 0; }}
 .matrix-cell {{ display: flex; flex-direction: column; align-items: center; gap: 2px; }}
-.matrix-cell img {{ display: block; border-radius: 3px; }}
-.matrix-val {{ width: 48px; height: 18px; border-radius: 3px; display: flex; align-items: center;
-    justify-content: center; font-size: 10px; font-weight: bold; }}
-.matrix-label {{ font-size: 11px; color: #aaa; margin: 4px 0 2px 0; font-style: italic; }}
-.matrix-highlight-btn {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483; padding: 3px 10px;
-    border-radius: 4px; cursor: pointer; font-size: 11px; margin-left: 8px; vertical-align: middle; }}
-.matrix-highlight-btn:hover {{ background: #533483; }}
-.matrix-highlight-btn.active {{ background: #e9b450; color: #1a1a2e; border-color: #e9b450; }}
+.matrix-cell img {{ display: block; border-radius: 3px; border: 1px solid var(--border); }}
+.matrix-val {{ width: 48px; height: 18px; border-radius: 3px; border: 1px solid var(--border); display: flex; align-items: center;
+    justify-content: center; font-size: 10px; font-weight: 600; font-family: 'Source Sans 3', sans-serif; }}
+.matrix-label {{ font-size: 11px; color: var(--muted); margin: 4px 0 2px 0; font-style: italic; }}
+.matrix-highlight-btn {{ background: var(--control-bg); color: var(--text); border: 1px solid var(--control-border); padding: 3px 10px;
+    border-radius: 4px; cursor: pointer; font-size: 11px; margin-left: 8px; vertical-align: middle;
+    font-family: 'Source Sans 3', sans-serif; }}
+.matrix-highlight-btn:hover {{ background: var(--hover); }}
+.matrix-highlight-btn.active {{ background: #e9b450; color: #1a1a1a; border-color: #e9b450; }}
 
 /* Transition-mode specific */
 .view-toggle {{ display: inline-flex; border-radius: 5px; overflow: hidden; margin-left: 16px; }}
-.view-toggle button {{ background: #0f3460; color: #e0e0e0; border: 1px solid #533483;
-    padding: 6px 16px; font-size: {c['font_select']}px; cursor: pointer; }}
-.view-toggle button.active {{ background: #533483; }}
+.view-toggle button {{ background: var(--control-bg); color: var(--text); border: 1px solid var(--control-border);
+    padding: 6px 16px; font-size: {c['font_select']}px; cursor: pointer; font-family: 'Source Sans 3', sans-serif; }}
+.view-toggle button.active {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
 .sbs-container {{ display: flex; gap: 8px; }}
 .sbs-half {{ flex: 1; }}
-.sbs-half h3 {{ text-align: center; margin: 0 0 4px 0; font-size: {c['font_h3']}px; color: #e9b450; }}
+.sbs-half h3 {{ text-align: center; margin: 0 0 4px 0; font-size: {c['font_h3']}px; color: var(--accent);
+    font-family: 'Source Sans 3', sans-serif; font-weight: 600; }}
 #sbs-legend, #anim-legend {{ display: flex; gap: {c['legend_gap']}px; justify-content: center;
     margin-bottom: 6px; flex-wrap: wrap; }}
 .sbs-legend-item {{ display: flex; align-items: center; gap: 5px; cursor: pointer;
     padding: 3px 8px; border-radius: 4px; font-size: {c['font_legend']}px; user-select: none; }}
-.sbs-legend-item:hover {{ background: rgba(255,255,255,0.08); }}
+.sbs-legend-item:hover {{ background: var(--hover); }}
 .sbs-legend-item.hidden {{ opacity: 0.3; }}
 #anim-controls {{ display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 8px;
-    background: #0f1a30; border-radius: 6px; }}
-#anim-controls button {{ background: #533483; color: #e0e0e0; border: none; padding: 8px 16px;
-    border-radius: 4px; font-size: {c['font_select']}px; cursor: pointer; min-width: 70px; }}
-#anim-controls button:hover {{ background: #e94560; }}
-#anim-slider {{ flex: 1; height: 6px; cursor: pointer; accent-color: #e94560; }}
-#anim-label {{ font-size: {c['font_info']}px; min-width: 100px; text-align: right; }}
+    background: var(--control-bg); border-radius: 6px; border: 1px solid var(--border); }}
+#anim-controls button {{ background: var(--accent); color: #fff; border: none; padding: 8px 16px;
+    border-radius: 4px; font-size: {c['font_select']}px; cursor: pointer; min-width: 70px;
+    font-family: 'Source Sans 3', sans-serif; }}
+#anim-controls button:hover {{ opacity: 0.85; }}
+#anim-slider {{ flex: 1; height: 6px; cursor: pointer; accent-color: var(--accent); }}
+#anim-label {{ font-size: {c['font_info']}px; min-width: 100px; text-align: right; color: var(--muted); }}
 </style>
 </head>
 <body>
@@ -1066,10 +1120,10 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
     </div>
     <label>Color by:
         <select id="color-mode-select" onchange="onColorModeChange()">
+            <option value="aff">NBHD Aff Sum</option>
+            <option value="diff">NBHD Diff Sum</option>
             <option value="cluster" selected>Cluster</option>
             <option value="label">Label</option>
-            <option value="diff">NBHD Diff Sum</option>
-            <option value="aff">NBHD Aff Sum</option>
         </select>
     </label>
 </div>
@@ -1110,8 +1164,7 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: #e94560; }}
             <button class="rank-step-btn" onclick="stepRank(-1)">&#9664;</button>
             <input type="range" id="rank-slider" min="0" max="0" value="0">
             <button class="rank-step-btn" onclick="stepRank(1)">&#9654;</button>
-            <span id="rank-label"></span>
-            <button id="save-snapshot-btn" onclick="saveSnapshot()" style="display:none; background:#0f3460; color:#e0e0e0; border:1px solid #533483; padding:4px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold; white-space:nowrap;">Save Snapshot</button>
+            <button id="save-snapshot-btn" onclick="saveSnapshot()" style="display:none; background:var(--accent); color:#fff; border:1px solid var(--accent); padding:4px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; white-space:nowrap; font-family:'Source Sans 3',sans-serif;">Save Snapshot</button> <span id="rank-label"></span>
         </div>
         <div id="right-content">
             <div id="right-placeholder">Click a colored cluster point to see analysis</div>
@@ -1156,7 +1209,7 @@ let animRAF = null;
 let highlightIdx = null;  // currently clicked point index
 let activeTab = 'matrix';
 let lastClickedIdx = null;
-let colorMode = 'cluster';  // 'cluster', 'label', or 'diff'
+let colorMode = 'aff';  // 'cluster', 'label', 'aff', or 'diff'
 
 // Generate distinct colors for dataset labels
 const UNIQUE_LABELS = [...new Set(LABELS)].sort((a, b) => a - b);
@@ -1334,10 +1387,10 @@ function gatherSnapshotData() {{
 
     var allGroupDefs = [
         {{key: 'r0_nn', label: lb.r0Title + ' Spatial Neighbors (K=' + K_matrix + ')'}},
-        {{key: 'rdx_nn', label: 'RDX Cluster Neighbors (K=' + K_matrix + ')'}},
+        {{key: 'rdx_nn', label: md.sampling_name + ' (K=' + K_matrix + ')'}},
         {{key: 'r1_nn', label: lb.r1Title + ' Spatial Neighbors (K=' + K_matrix + ')'}},
     ];
-    var groupDefs = md.cluster === 0
+    var groupDefs = (!md.rdx_nn || !md.rdx_nn.indices || md.rdx_nn.indices.length === 0)
         ? allGroupDefs.filter(function(gd) {{ return gd.key !== 'rdx_nn'; }})
         : allGroupDefs;
 
@@ -1384,7 +1437,7 @@ function renderSnapshotHTML(data) {{
     h += '.cell .idx {{ font-family: "Source Sans 3", sans-serif; font-size: 0.7rem; color: var(--muted); margin-top: 2px; }}';
     h += '.val-row {{ display: flex; flex-wrap: nowrap; gap: 4px; margin: 3px 0; }}';
     h += '.val-row-label {{ font-family: "Source Sans 3", sans-serif; font-size: 0.78rem; color: var(--muted); font-style: italic; margin: 6px 0 2px 0; }}';
-    h += '.val {{ flex: 1; min-width: 0; height: 20px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-family: "Source Sans 3", sans-serif; font-size: 0.72rem; font-weight: 600; }}';
+    h += '.val {{ flex: 1; min-width: 0; height: 20px; border-radius: 3px; border: 1px solid #e2e2de; display: flex; align-items: center; justify-content: center; font-family: "Source Sans 3", sans-serif; font-size: 0.72rem; font-weight: 600; }}';
     // Modal
     h += '.modal-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; cursor: pointer; }}';
     h += '.modal-overlay.active {{ display: flex; }}';
@@ -1631,13 +1684,13 @@ function buildTraces(emb, clLabels) {{
             x: groups[0].x, y: groups[0].y,
             customdata: groups[0].idx,
             mode: 'markers', type: 'scatter',
-            marker: {{size: UI.marker_null_size, color: '#444', opacity: UI.marker_null_opacity}},
+            marker: {{size: UI.marker_null_size, color: '{theme['null_marker']}', opacity: UI.marker_null_opacity}},
             name: 'null',
             hovertemplate: 'idx: %{{customdata}}<br>label: %{{text}}<extra></extra>',
             text: groups[0].idx.map(i => LABELS[i].toString()),
         }});
     }}
-    Object.keys(groups).filter(k => k !== '0').sort().forEach(cl => {{
+    Object.keys(groups).filter(k => k !== '0').sort((a, b) => parseInt(a) - parseInt(b)).forEach(cl => {{
         const g = groups[cl];
         traces.push({{
             x: g.x, y: g.y,
@@ -1655,7 +1708,7 @@ function buildTraces(emb, clLabels) {{
         x: [], y: [],
         mode: 'markers', type: 'scatter',
         marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
-                  line: {{color: '#fff', width: 3}}}},
+                  line: {{color: '{theme['text']}', width: 3}}}},
         name: 'selected',
         showlegend: false,
         hoverinfo: 'skip',
@@ -1706,7 +1759,7 @@ function buildLabelTraces(emb) {{
         x: [], y: [],
         mode: 'markers', type: 'scatter',
         marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
-                  line: {{color: '#fff', width: 3}}}},
+                  line: {{color: '{theme['text']}', width: 3}}}},
         name: 'selected',
         showlegend: false,
         hoverinfo: 'skip',
@@ -1764,7 +1817,7 @@ function buildScalarTraces(emb, valueKey, colorscale, cmid, title) {{
             x: noVal.x, y: noVal.y,
             customdata: noVal.idx,
             mode: 'markers', type: 'scatter',
-            marker: {{size: UI.marker_null_size, color: '#444', opacity: UI.marker_null_opacity}},
+            marker: {{size: UI.marker_null_size, color: '{theme['null_marker']}', opacity: UI.marker_null_opacity}},
             name: 'no data',
             hovertemplate: 'idx: %{{customdata}}<br>label: %{{text}}<extra></extra>',
             text: noVal.idx.map(i => LABELS[i].toString()),
@@ -1778,7 +1831,7 @@ function buildScalarTraces(emb, valueKey, colorscale, cmid, title) {{
             color: hasVal.vals,
             colorscale: colorscale,
             opacity: UI.marker_cluster_opacity,
-            colorbar: {{title: title, tickfont: {{color: '#e0e0e0'}}, titlefont: {{color: '#e0e0e0'}}}},
+            colorbar: {{title: title, tickfont: {{color: '{theme['text']}'}}, titlefont: {{color: '{theme['text']}'}}}},
         }};
         if (cmid !== null) markerOpts.cmid = cmid;
         traces.push({{
@@ -1797,7 +1850,7 @@ function buildScalarTraces(emb, valueKey, colorscale, cmid, title) {{
         x: [], y: [],
         mode: 'markers', type: 'scatter',
         marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
-                  line: {{color: '#fff', width: 3}}}},
+                  line: {{color: '{theme['text']}', width: 3}}}},
         name: 'selected',
         showlegend: false,
         hoverinfo: 'skip',
@@ -1822,7 +1875,7 @@ function buildDiffTraces(emb) {{
 }}
 
 function buildAffTraces(emb) {{
-    return buildScalarTraces(emb, 'nhood_am_sum', 'YlOrRd', null, 'NBHD Aff Sum');
+    return buildScalarTraces(emb, 'nhood_am_sum', 'Magma', null, 'NBHD Aff Sum');
 }}
 
 // Build traces colored by classifier (KNN or linear) result
@@ -1901,7 +1954,7 @@ function buildKnnTraces(emb, layerName, dataSource) {{
         x: [], y: [],
         mode: 'markers', type: 'scatter',
         marker: {{size: UI.marker_cluster_size + 8, color: 'rgba(0,0,0,0)',
-                  line: {{color: '#fff', width: 3}}}},
+                  line: {{color: '{theme['text']}', width: 3}}}},
         name: 'selected',
         showlegend: false,
         hoverinfo: 'skip',
@@ -1968,14 +2021,14 @@ function onColorModeChange() {{
 function makeLayout(range, plotHeight) {{
     return {{
         xaxis: {{title: {{text: 'UMAP 1', font: {{size: UI.font_plot_axis_title}}}},
-                 gridcolor: '#2a2a4a', tickfont: {{size: UI.font_plot_tick}},
+                 gridcolor: '{theme['grid']}', tickfont: {{size: UI.font_plot_tick, color: '{theme['tick_color']}'}},
                  range: range.xRange}},
         yaxis: {{title: {{text: 'UMAP 2', font: {{size: UI.font_plot_axis_title}}}},
-                 gridcolor: '#2a2a4a', tickfont: {{size: UI.font_plot_tick}},
+                 gridcolor: '{theme['grid']}', tickfont: {{size: UI.font_plot_tick, color: '{theme['tick_color']}'}},
                  range: range.yRange}},
-        plot_bgcolor: '#0f1a30',
-        paper_bgcolor: '#16213e',
-        font: {{color: '#e0e0e0', size: UI.font_plot_general}},
+        plot_bgcolor: '{theme['plot_bg']}',
+        paper_bgcolor: '{theme['paper_bg']}',
+        font: {{color: '{theme['font_color']}', size: UI.font_plot_general}},
         legend: {{font: {{size: UI.font_plot_legend}}}},
         margin: {{l: 50, r: 10, t: 10, b: 50}},
         hovermode: 'closest',
@@ -2116,8 +2169,8 @@ function initAnimScatter() {{
     const ep = getEndpoints(pair, direction);
     const e0 = EMBEDDINGS[ep.startLn];
     const range = getSharedRange(pair);
-    const plotH = Math.max(UI.scatter_min_height,
-                           window.innerHeight - UI.scatter_height_offset);
+    const plotH = Math.max(UI.scatter_min_height / 1.1,
+                           window.innerHeight - UI.scatter_height_offset - 120);
 
     // Build traces using the current color mode
     const traces = buildColoredTraces(e0, clLabels);
@@ -2291,7 +2344,8 @@ function showNeighborAnalysis(imgIdx) {{
     html += `<div class="legend">`;
     groups.forEach(g => {{
         const isRdxGroup = g.items.some(item => item.key === 'rdx_was_near' || item.key === 'rdx_was_far');
-        if (isRdxGroup && nbData.cluster === 0) return;
+        const rdxEmpty = isRdxGroup && (!nbData.rdx_was_near || nbData.rdx_was_near.length === 0) && (!nbData.rdx_was_far || nbData.rdx_was_far.length === 0);
+        if (rdxEmpty) return;
         g.items.forEach(item => {{
             html += `<div class="legend-item"><div class="legend-swatch" style="background:${{item.color}}"></div>${{item.label}}</div>`;
         }});
@@ -2300,9 +2354,10 @@ function showNeighborAnalysis(imgIdx) {{
 
     // Groups
     groups.forEach((g, gi) => {{
-        // Skip RDX cluster groups for null cluster points
+        // Skip RDX cluster groups if no RDX neighbor data
         const isRdxGroup = g.items.some(item => item.key === 'rdx_was_near' || item.key === 'rdx_was_far');
-        if (isRdxGroup && nbData.cluster === 0) return;
+        const rdxEmpty = isRdxGroup && (!nbData.rdx_was_near || nbData.rdx_was_near.length === 0) && (!nbData.rdx_was_far || nbData.rdx_was_far.length === 0);
+        if (rdxEmpty) return;
 
         const groupIndices = [];
         g.items.forEach(item => {{
