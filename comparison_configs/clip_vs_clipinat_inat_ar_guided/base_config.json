@@ -1,0 +1,70 @@
+{
+  "seed": 42,
+  "move_to_cpu_in_hook": true,
+  "guidance": "tpfp",
+  "image_selection": {
+    "dataset_name": "inatdl",
+    "dataset_root": "./data/inat_subset/",
+    "dataset_split": "train",
+    "transform_type": "test",
+    "patchify": false,
+    "patch_size": 64,
+    "image_group_strategy": "ground_truth",
+    "target_classes": [658, 496, 806],
+    "num_images": 500,
+    "seed": 0,
+    "group_all_images": true
+  },
+  "representation_params": {
+    "repr_0": {
+      "model": "hf_hub:timm/vit_large_patch14_clip_336.openai",
+      "feature_extraction_params": {
+        "feature_layer_version": "cls_tok_ll"
+      }
+    },
+    "repr_1": {
+      "model": "hf_hub:timm/vit_large_patch14_clip_336.laion2b_ft_in12k_in1k_inat21",
+      "feature_extraction_params": {
+        "feature_layer_version": "cls_tok_ll"
+      }
+    }
+  },
+  "only_last_layer": true,
+  "methods": [
+    {
+      "method": "rdx",
+      "rdx_version": "v2",
+      "method_name": "rdx_nb_lb_spectral",
+      "sim_function": "neighborhood",
+      "diff_function": "locally_biased",
+      "clustering_method": "spectral",
+      "align_representations": true,
+      "add_null_cluster": true,
+      "gamma_scale": null,
+      "gamma": 0.05,
+      "beta": 5,
+      "n_clusters": 10,
+      "viz_params": {
+        "show": false,
+        "save": true,
+        "null_thresh": 1.5,
+        "num_samples": 9,
+        "grid_size": "3x3",
+        "skip_low_affinity_for_summary": false,
+        "cluster_sample_strategy": "maximize_total_neighborhood_affinity",
+        "label_cluster_images": true,
+        "add_predicted_label_to_cluster_images": true
+      }
+    },
+    {
+      "method": "classification",
+      "classifier": "logistic_regression",
+      "align_representations": true,
+      "folds": 5
+    },
+    {
+      "method": "cka",
+      "verbose": true
+    }
+  ]
+}

@@ -182,6 +182,7 @@ def main():
         'thumb_grid_gap': 6,
         'clicked_img_size': 180,
         'clicked_img_border': 4,
+        'dark': False,
         # -- Modal (click-to-enlarge) --
         'modal_img_size': 400,        # px — enlarged image size in modal
         'modal_border': 3,
@@ -202,6 +203,7 @@ def main():
         'umap_mode': 'pairwise',
         'K': args.K,
         'K_matrix': args.K_matrix,
+        'show_head_importance': False,
     }
 
     # 1. Load data

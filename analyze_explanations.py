@@ -9,7 +9,7 @@ from scipy.optimize import linear_sum_assignment
 from matplotlib import colors
 from scipy.special import comb
 import itertools
-from src.rdx import RDX
+from src.rdx_paper import RDX
 from src.dist_funcs import (zp_local_scaling_euclidean_distance, scale_invariant_local_biased_distance,
                             max_normalized_euclidean_distance)
 import pandas as pd

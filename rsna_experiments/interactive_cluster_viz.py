@@ -37,27 +37,21 @@ def load_cached_data(output_dir):
     activations = cached['activations']
     labels = cached['labels']
 
-    # Extract CLS token (index -1, matching activation_patching.py)
-    acts = {}
-    layer_names = []
-    for k in activations['block']:
-        acts[k] = activations['block'][k][:, 0]  # (N, D)
-        if isinstance(acts[k], torch.Tensor):
-            acts[k] = acts[k].numpy()
-        layer_names.append(k)
+    def _to_numpy(t):
+        return t.numpy() if isinstance(t, torch.Tensor) else t
 
-    opt_keys = ['post_ln', 'post_proj']
-    for k in opt_keys:
+    # Extract CLS token (index 0), matching analyze_biomedclip.py
+    acts = {}
+    for k in activations['block']:
+        acts[k] = _to_numpy(activations['block'][k][:, 0])  # (N, D)
+
+    for k in ['post_ln', 'post_proj']:
         if k in activations and activations[k] is not None:
-            if len(activations[k].shape) == 3:  # (N, L, D)
-                acts[k] = activations[k][:, 0]
-            else:
-                acts[k] = activations[k]
-            if isinstance(acts[k], torch.Tensor):
-                acts[k] = acts[k].numpy()
-            layer_names.append(k)
+            v = activations[k][:, 0] if len(activations[k].shape) == 3 else activations[k]
+            acts[k] = _to_numpy(v)
 
     # Load RDX outputs for consecutive layer pairs
+    layer_names = list(acts.keys())
     rdx_data = {}
     for i in range(len(layer_names) - 1):
         ln1, ln2 = layer_names[i], layer_names[i + 1]
@@ -66,13 +60,12 @@ def load_cached_data(output_dir):
         if os.path.exists(outputs_path):
             with open(outputs_path, 'rb') as f:
                 rdx_data[(ln1, ln2)] = pkl.load(f)
-        print()
     return acts, labels, layer_names, rdx_data
 
 
-def save_images_as_thumbnails(data_root, output_dir, num_samples, probe_num_samples=1500, thumb_size=56):
+def save_images_as_thumbnails(data_root, output_dir, viz_dir, thumb_size=56):
     """Load dataset images and save as JPEG thumbnails to disk."""
-    thumbs_dir = os.path.join(output_dir, 'thumbs')
+    thumbs_dir = os.path.join(viz_dir, 'thumbs')
     os.makedirs(thumbs_dir, exist_ok=True)
 
     # Use a resize-only transform (no normalization)
@@ -81,7 +74,7 @@ def save_images_as_thumbnails(data_root, output_dir, num_samples, probe_num_samp
     ])
     ds = load_dataset(data_root, transform)
 
-    with open('inds_for_patching_and_probing.pkl', 'rb') as f:
+    with open(os.path.join(output_dir, 'inds_for_patching_and_probing.pkl'), 'rb') as f:
         inds_dict = pkl.load(f)
         ptch_inds = inds_dict['ptch_inds']
 
@@ -99,10 +92,7 @@ def main():
     parser.add_argument('--data_root', type=str,
                         default='/media/nkondapa/SSD2/data/RSNA')
     parser.add_argument('--output_dir', type=str,
-                        default='outputs/rsna_biomedclip/activation_patching')
-    parser.add_argument('--num_samples', type=int, default=1500)
-    parser.add_argument('--probe_num_samples', type=int, default=1500,
-                        help='Must match value used in activation_patching.py')
+                        default='../outputs/rsna_biomedclip/')
     parser.add_argument('--K', type=int, default=12,
                         help='Number of neighbors to show')
     parser.add_argument('--K_matrix', type=int, default=12,
@@ -175,6 +165,7 @@ def main():
         'umap_mode': 'global',           # ** 'global' = align all layers with window, 'pairwise' = align each pair independently
         'K': args.K,
         'K_matrix': args.K_matrix,
+        'show_head_importance': True,
     }
 
     # 1. Load cached data
@@ -183,12 +174,17 @@ def main():
     print(f'Loaded {N} samples across {len(layer_names)} layers')
     print(f'Layer pairs with RDX data: {len(rdx_data)}')
 
+    # Load patching results if available
+    patching_path = os.path.join(args.output_dir, 'patching_results.pkl')
+    patching_data = None
+    if os.path.exists(patching_path):
+        with open(patching_path, 'rb') as f:
+            patching_data = pkl.load(f)
+
     # 2. Save image thumbnails to disk
     viz_dir = os.path.join(args.output_dir, 'interactive_viz')
     os.makedirs(viz_dir, exist_ok=True)
-    save_images_as_thumbnails(args.data_root, viz_dir, args.num_samples,
-                              probe_num_samples=args.probe_num_samples,
-                              thumb_size=args.thumb_size)
+    save_images_as_thumbnails(args.data_root, args.output_dir, viz_dir, thumb_size=args.thumb_size)
 
     # 3. Compute AlignedUMAP
     embeddings = compute_aligned_umap(acts, layer_names, mode=ui_config.get('umap_mode', 'pairwise'))
@@ -213,7 +209,8 @@ def main():
     generate_html(embeddings, layer_names, rdx_data, neighbor_data,
                   'thumbs', labels, output_path, ui_config=ui_config,
                   matrix_data=matrix_data, ranking_data=ranking_data,
-                  lazy_load=args.lazy_load, **{knn_kw: clf_data})
+                  lazy_load=args.lazy_load, patching_data=patching_data,
+                  **{knn_kw: clf_data})
 
 
 if __name__ == '__main__':

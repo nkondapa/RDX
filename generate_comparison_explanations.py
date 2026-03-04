@@ -1,40 +1,39 @@
-import numpy as np
-import tqdm
-import torch
-from math import ceil
-import torchvision
 import copy
-
-from src.utils.parser_helper import representation_comparison_parser
-from src.utils import saving, model_loader, concept_extraction_helper as ceh
-from src.utils.hooks import ActivationHookV2
-from src.utils.funcs import set_seed
 import json
 import os
-from tqdm import tqdm
 import pickle as pkl
 import time
-from sklearn.model_selection import KFold
-from sklearn.decomposition import NMF
-from src.utils import funcs as suf
-from sklearn.decomposition import PCA
-from cblearn.embedding import GNMDS
-import cblearn
+from math import ceil
+
+import numpy as np
+import pytorch_lightning as pl
+import torch
+import torchvision
+from matplotlib import rc
 from sklearn.cluster import KMeans
+from sklearn.decomposition import NMF, PCA
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import KFold
+from sklearn.multiclass import OneVsRestClassifier
+from tqdm import tqdm
+
+from pymf.pymf.cnmf import CNMF
+from pymf.pymf.snmf import SNMF
+from src import cka
+from src import kmeans_visualization_helper as kmviz
+from src import nmf_visualization_helper as mfviz
+from src import nlmcd_visualization_helper as nviz
+from src.rdx import RDX as RDX_V2
+from src.rdx_paper import RDX
+from src.saev import SparseAutoencoder
+from src.utils import funcs as suf
+from src.utils import model_loader, concept_extraction_helper as ceh
+from src.utils.funcs import set_seed
+from src.utils.hooks import ActivationHookV2
 from src.utils.model_loader import split_model
-from matplotlib import rc, colors
+from src.utils.parser_helper import representation_comparison_parser
 
 rc('text.latex', preamble=r'\usepackage{color}')
-import pytorch_lightning as pl
-from src import cka
-from src.rdx import RDX
-from src import nmf_visualization_helper as mfviz
-from src import kmeans_visualization_helper as kmviz
-from src import nlmcd_visualization_helper as nviz
-from pymf.pymf.snmf import SNMF
-from pymf.pymf.cnmf import CNMF
-from src.saev import SparseAutoencoder
 
 os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'
 
@@ -93,19 +92,11 @@ def shared_concept_proposals_inference(params):
                 images_preprocessed_list.append(images_preprocessed.cpu())
                 st = time.time()
                 out = _batch_inference(models[mi], images_preprocessed, batch_size=256, device=device, no_grad=True)
-
-                # out = models[mi].requires_grad_(True)(images_preprocessed[:2].cuda())
-                # print(models[mi].layer4[1].conv2.weight.grad)
-                # torch.autograd.backward(out[0], torch.randn_like(out[0]))
-                # print(models[mi].layer4[1].conv2.weight.grad)
-
                 act_hooks[mi].concatenate_layer_activations()
                 print(f'Inference took {time.time() - st} seconds, {images_preprocessed.shape[0]} images')
-                print(len(image_list))
                 outs.append(out)
     else:
 
-        dataset_name = dataset_name
         if dataset_name == 'imagenet':
             assert transforms[0].transforms[1].size == transforms[1].transforms[1].size
             assert transforms[0].transforms[1].size[0] == 224
@@ -146,13 +137,13 @@ def shared_concept_proposals_inference(params):
 
     if transforms[0] is not None:
         for ti in transforms[0].transforms:
-            if type(ti) == torchvision.transforms.Normalize:
+            if isinstance(ti, torchvision.transforms.Normalize):
                 mean = ti.mean
                 std = ti.std
                 break
     elif transforms[1] is not None:
         for ti in transforms[1].transforms:
-            if type(ti) == torchvision.transforms.Normalize:
+            if isinstance(ti, torchvision.transforms.Normalize):
                 mean = ti.mean
                 std = ti.std
                 break
@@ -186,17 +177,23 @@ def run_cka(input_dict):
     return output_dict
 
 
-def run_clf(input_dict):
+def run_clf(input_dict, load_outputs=False):
     output_dir = input_dict['output_dir']
     method_dir = os.path.join(output_dir, 'clf')
+
+    if load_outputs:
+        with open(os.path.join(method_dir, 'outputs.pkl'), 'rb') as f:
+            output_dict = pkl.load(f)
+        return output_dict
+
     os.makedirs(method_dir, exist_ok=True)
     representations = input_dict['representations']
     num_folds = input_dict['folds']
-    seed = input_dict['seed']
+    seed = 0
     indices = np.arange(representations[0].shape[0])
     np.random.shuffle(indices)
     dataset_labels = input_dict['dataset_labels']
-    seed = 0
+    multilabel = len(dataset_labels.shape) > 1
     kf = KFold(n_splits=num_folds, shuffle=True, random_state=seed)
 
     repr_keys = ['0', '1']
@@ -216,8 +213,15 @@ def run_clf(input_dict):
     for i, (train_index, test_index) in enumerate(kf.split(indices)):
         for ii in range(len(clfs)):
             repr_key = repr_keys[ii]
-            clf = LogisticRegression(random_state=seed).fit(representations[ii][train_index],
-                                                            dataset_labels[train_index])
+            if multilabel:
+                clf = OneVsRestClassifier(
+                            LogisticRegression(random_state=seed
+                            )
+                        )
+                clf.fit(representations[ii][train_index], dataset_labels[train_index])
+            else:
+                clf = LogisticRegression(random_state=seed).fit(representations[ii][train_index],
+                                                                dataset_labels[train_index])
             acc = clf.score(representations[ii][test_index], dataset_labels[test_index])
             clfs[repr_key].append(clf)
             preds[test_index, ii] = clf.predict(representations[ii][test_index])
@@ -233,8 +237,6 @@ def run_clf(input_dict):
             agreement["01m"].append(np.mean(
                 np.argmax(clfs['0'][i].predict_proba(representations[0][test_index]), axis=1) == np.argmax(
                     clfs['1m'][i].predict_proba(representations[1][test_index]), axis=1)))
-
-        # print(f'CLF: ', np.mean(np.array(accs["0"])), np.mean(np.array(accs["1"])))
 
     s_all = ''
     if input_dict.get('verbose', True):
@@ -262,7 +264,13 @@ def run_rdx(input_dict, load_outputs=False):
     method_dir = os.path.join(output_dir, method_name)
     os.makedirs(method_dir, exist_ok=True)
 
-    rdx = RDX()
+    if input_dict.get('rdx_version', 'paper') == 'paper':
+        rdx = RDX()
+    elif input_dict.get('rdx_version', 'paper') == 'v2':
+        rdx = RDX_V2()
+    else:
+        raise ValueError(f'Unknown RDX version: {input_dict.get("rdx_version", "paper")}')
+
     if load_outputs:
         with open(os.path.join(method_dir, 'outputs.pkl'), 'rb') as f:
             output_dict = pkl.load(f)
@@ -364,7 +372,6 @@ def run_nmf(input_dict, load_outputs=False):
                 V = nmf.W.T
                 recon = U @ V
                 recon_err = torch.norm(repr_ - recon).item()
-                print(recon_err)
             elif nmf_type == 'cnmf':
                 nmf = CNMF(repr_.numpy().T, num_bases=num_comp, niter=100, verbose=True)
                 nmf.factorize()
@@ -470,22 +477,11 @@ def run_sae(input_dict, load_outputs=False):
                 repr_ = repr_.to(input_dict['device'])
                 recon, U, _ = sae(repr_)
                 U = U.cpu().numpy()
-                recon_err = np.linalg.norm(repr_.cpu().numpy() - recon.cpu().numpy())
-                print(recon_err)
                 recon = sae.dataset.unnormalize(recon)
                 recon_err = np.linalg.norm(repr_.cpu().numpy() - recon.cpu().numpy())
-                print(recon_err)
 
             output_dict[names[ri]] = {'global_step': global_step, 'loss_history': loss_history,
                                       'U': U, 'V': sae.W_dec, 'V_bias': sae.b_dec, 'recon_err': recon_err}
-            print(recon_err)
-            # nmf = PCA(n_components=num_comp, random_state=seed)
-            # nmf.fit(repr_)
-            # U = nmf.transform(repr_)
-            # recon_err = np.linalg.norm(repr_ - nmf.inverse_transform(U))
-            # V =  nmf.components_
-
-            # output_dict[names[ri]] = {'recon_err': recon_err, 'U': U, 'V': V}
 
         output_dict['method_dir'] = method_dir
         output_dict['inputs'] = input_dict['method_dict']
@@ -548,15 +544,6 @@ def run_topk_sae(input_dict, load_outputs=False):
                                       'V': sae.get_dictionary().detach().cpu().numpy(),
                                       'recon_err': logs['r2'][-1]}
 
-            print(logs['r2'][-1])
-            # nmf = PCA(n_components=num_comp, random_state=seed)
-            # nmf.fit(repr_)
-            # U = nmf.transform(repr_)
-            # recon_err = np.linalg.norm(repr_ - nmf.inverse_transform(U))
-            # V =  nmf.components_
-
-            # output_dict[names[ri]] = {'recon_err': recon_err, 'U': U, 'V': V}
-
         output_dict['method_dir'] = method_dir
         output_dict['inputs'] = input_dict['method_dict']
         with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
@@ -605,9 +592,7 @@ def run_nlmcd(input_dict, load_outputs=False):
         names = ['repr_0', 'repr_1']
         cfg_dirs = []
         for ri, repr_ in enumerate(representations):
-            # repr_ = repr_[:1000, :]
             base_conf = OmegaConf.load("./src/nlmcd/source/conf/concept_discovery.yaml")
-            # cli_conf = OmegaConf.from_cli()
             now = datetime.now()
             now_conf = OmegaConf.create({"now_dir": f"{now:%Y-%m-%d}/{now:%H-%M-%S}"})
             # merge them all
@@ -620,7 +605,6 @@ def run_nlmcd(input_dict, load_outputs=False):
             cfg_dirs.append(cfg_dir)
 
         base_conf = OmegaConf.load("./src/nlmcd/source/conf/evaluate_alignment.yaml")
-        # cli_conf = OmegaConf.from_cli()
         now = datetime.now()
         now_conf = OmegaConf.create({"now_dir": f"{now:%Y-%m-%d}/{now:%H-%M-%S}"})
         # merge them all
@@ -629,10 +613,6 @@ def run_nlmcd(input_dict, load_outputs=False):
         conf.cfg_dir = os.path.join(method_dir, 'clustering')
         conf.now_dir = '0_vs_1'
         align_dir = os.path.join(method_dir, 'concept_alignment', '0_vs_1')
-        # cfg_dir = './results/concept_discovery/cub_pcbm_v_cub_masked_pcbm_ed=[27]/'
-        # exp_dir = './results/alignment/cub_pcbm_v_cub_masked_pcbm_ed=[27]'
-        # conf.cfg_dir = cfg_dir
-        # conf.exp_dir = exp_dir
         main_evaluate_concept_alignment(conf)
         date = "2024-10-11_15-00-00"
         d = {}
@@ -649,9 +629,6 @@ def run_nlmcd(input_dict, load_outputs=False):
         output_dict['inputs'] = input_dict['method_dict']
         with open(os.path.join(method_dir, 'outputs.pkl'), 'wb') as f:
             pkl.dump(output_dict, f)
-
-        # with open(os.path.join(method_dir, 'fig_paths.pkl'), 'wb') as f:
-        #     pkl.dump(d, f)
 
     if input_dict.get('viz_params', None) is not None:
         fig_paths = nviz.generate_visualizations(input_dict, output_dict, input_dict['viz_params'])
@@ -761,7 +738,6 @@ def run_usae(input_dict, load_outputs=False):
                 repr_ = representations[0].clone().detach() if model_name == 'repr_0' else representations[
                     1].clone().detach()
                 pre_codes, z_topk = sae.encode(repr_.to('cuda'))
-                # top_concept_inds = z_topk.detach().mean(0).topk(sae_params['top_k']).indices
                 output_dict[names[ri]] = {
                     'global_step': len(logs['avg_loss']), 'loss_history': logs['avg_loss'],
                     'U': z_topk.detach()[:, top_inds[ri]].cpu().numpy(),
@@ -806,7 +782,6 @@ def learn_mapping(repr_from, repr_to, params):
         optim.step()
         with torch.no_grad():
             test_cka = 1 - cka_loss.linear_CKA(mapping_layer(repr_from)[test_indices], repr_to[test_indices])
-        print(cka_loss_value.item(), test_cka.item())
         train_ckas.append(cka_loss_value.item())
         test_ckas.append(test_cka.item())
         if best_mapping_layer is None or test_cka < min(test_ckas):
@@ -823,7 +798,6 @@ def main():
     parser = representation_comparison_parser()
     parser.add_argument('--skip_viz_clusters', action='store_true')
     parser.add_argument('--model_0_ckpt', type=str, default=None)
-    parser.add_argument('--model_0_triplets', type=str, default=None)
     parser.add_argument('--model_1_ckpt', type=str, default=None)
     parser.add_argument('--save_m1_representation', action='store_true')
     parser.add_argument('--save_m0_representation', action='store_true')
@@ -837,10 +811,6 @@ def main():
     if args.model_0_ckpt is not None:
         config['representation_params']['repr_0']['model_ckpt'] = args.model_0_ckpt
         output_root_folder = f'{output_root_folder}/{args.model_0_ckpt.split("/")[-1].split(".")[0]}'
-
-    if args.model_0_triplets is not None:
-        config['representation_params']['repr_0']['triplet_embedding_data'] = args.model_0_triplets
-        output_root_folder = f'{output_root_folder}/{args.model_0_triplets.split("simulated_triplets/")[-1].split(".pkl")[0]}'
 
     representation_params = config['representation_params']
     repr_0 = representation_params['repr_0']
@@ -890,6 +860,7 @@ def main():
     else:
         raw_data = None
 
+    label_names = dataset.label_names if hasattr(dataset, 'label_names') else None
     # Load models, transforms for models, and layers
     patchify = image_selection_params.get('patchify', False)
     patch_size = image_selection_params.get('patch_size', None)
@@ -921,48 +892,6 @@ def main():
             backbone, fc = split_model(model)
             clfs.append(fc)
             representations.append(None)
-
-        elif 'triplet_embedding_data' in param_dicts:
-            if dataset_name == 'chinese_chars' or dataset_name == 'butterflies':
-                # handle the format for triplet data from humans on these datasets
-                path = param_dicts['triplet_embedding_data']
-                if '.pkl' in path:
-                    with open(path, 'rb') as f:
-                        triplet_indices = pkl.load(f)['triplets']
-                else:
-                    # generally used for simulated triplet data
-                    triplet_indices = np.load(param_dicts['triplet_embedding_data'])['triplet']
-            else:
-                raise ValueError(f'Unknown dataset: {dataset_name}')
-
-            key = list(image_group.keys())[0]
-            assert triplet_indices.max() < len(image_group[key])
-            fe_outs.append({'layer_names': [None]})
-            transforms.append(None)
-            act_hooks.append(None)
-            models.append(None)
-            clfs.append(None)
-            og_models.append(None)
-
-            if param_dicts['triplet_embedding_method'] == 'GNMDS':
-                max_iter = 2000 if param_dicts.get('max_iter', None) is None else param_dicts['max_iter']
-                max_iter = 100 if args.debug else max_iter
-                estimator = GNMDS(n_components=param_dicts['num_dimensions'], verbose=True, max_iter=max_iter, )
-                repr = estimator.fit_transform(triplet_indices)
-                print(f'Estimator Stress: {estimator.stress_}')
-                repr = torch.FloatTensor(repr)
-                representations.append(repr)
-            elif param_dicts['triplet_embedding_method'] == 'CKL':
-                max_iter = 2000 if param_dicts.get('max_iter', None) is None else param_dicts['max_iter']
-                max_iter = 100 if args.debug else max_iter
-                estimator = cblearn.embedding.CKL(n_components=param_dicts['num_dimensions'], verbose=True,
-                                                  max_iter=max_iter, )
-                repr = estimator.fit_transform(triplet_indices)
-                print(f'Estimator Stress: {estimator.stress_}')
-                repr = torch.FloatTensor(repr)
-                representations.append(repr)
-            else:
-                raise ValueError(f'Unknown triplet embedding method: {param_dicts["triplet_embedding_method"]}')
 
         elif 'pcbm' in param_dicts:
             key = list(image_group.keys())[0]
@@ -1007,12 +936,9 @@ def main():
         m0_layers = [m0_layers[0]]
         m1_layers = [m1_layers[0]]
 
-
     labels = np.array(labels)
 
-    ci = 0
     pbar = tqdm(list(image_group.keys()))
-    # preds = []
     preds = None
     for image_group_key in pbar:
         pbar.set_description(f'Class {image_group_key}')
@@ -1028,8 +954,11 @@ def main():
             raw_data=raw_data,
         )
         images_preprocessed, labels, outs, unnormalize = shared_concept_proposals_inference(params)
-        # preds.append(outs[0].argmax(1))
-        # preds.append(outs[1].argmax(1))
+
+        # Save image paths for interactive visualization
+        image_paths_file = os.path.join(output_root_folder, 'image_paths.pkl')
+        pkl.dump({'paths': image_group[image_group_key], 'data_root': dataset_root, 'labels': labels},
+                 open(image_paths_file, 'wb'))
         if len(images_preprocessed) == 1:
             image_samples = [unnormalize(images_preprocessed[0])] * 2
         elif len(images_preprocessed) == 2:
@@ -1040,20 +969,18 @@ def main():
                 [os.path.join(dataset.data_root, dataset.paths[i]) for i in range(len(dataset.paths))])] * 2
 
         print('Comparing model concepts')
-        # pl.seed_everything(42)
-        if guidance is not None and guidance == 'classifier':
-            # re-order methods so that classification is run first
-            method_dicts = config['methods']
-            clf_method_ind = None
-            for mi, method_dict in enumerate(method_dicts):
-                if method_dict['method'] == 'classification':
-                    clf_method_ind = mi
-                    break
-            if clf_method_ind is None:
-                raise ValueError('Guidance is set to classifier but no classification method dict found in methods list')
-            else:
-                method_dicts[0], method_dicts[clf_method_ind] = method_dicts[clf_method_ind], method_dicts[0]
-                config['methods'] = method_dicts
+        # re-order methods so that classification is run first (needed for verbose plots)
+        method_dicts = config['methods']
+        clf_method_ind = None
+        for mi, method_dict in enumerate(method_dicts):
+            if method_dict['method'] == 'classification':
+                clf_method_ind = mi
+                break
+        if clf_method_ind is None:
+            raise ValueError('Guidance is set to classifier but no classification method dict found in methods list')
+        else:
+            method_dicts[0], method_dicts[clf_method_ind] = method_dicts[clf_method_ind], method_dicts[0]
+            config['methods'] = method_dicts
 
         for lj, m1_layer in enumerate(m1_layers):  # reverse order to start from the last layer
             if m1_layer is not None:
@@ -1073,9 +1000,6 @@ def main():
                     with open(f'{output_root_folder}/m1_rep.pkl', 'wb') as f:
                         pkl.dump(representations[1], f)
 
-                # with open(f'{output_root_folder}/labels.pkl', 'wb') as f:
-                #     pkl.dump(labels, f)
-
                 red0 = PCA(2).fit_transform(representations[0])
                 red1 = PCA(2).fit_transform(representations[1])
                 repr0_mapped, repr1_mapped = None, None
@@ -1091,14 +1015,16 @@ def main():
                     input_dict['red0'] = red0
                     input_dict['red1'] = red1
                     input_dict['dataset_labels'] = labels
+                    input_dict['label_names'] = label_names
                     input_dict['image_samples'] = image_samples[0]
                     # added so that it can be separated and added to saved outputs and can be used for viz
                     input_dict['method_dict'] = method_dict
                     input_dict['guidance'] = guidance
                     method_name = method_dict.get("method_name", 'default')
+                    load_outputs = False
 
                     align_reps = method_dict.get('align_representations', None)
-                    if align_reps is not None and align_reps is not False:
+                    if align_reps is not None and align_reps is not False and not load_outputs:
                         align_params = method_dict.get('align_params', {})
                         if repr0_mapped is None:
                             mapping_params = {'train_fraction': align_params.get('train_fraction', 0.7),
@@ -1120,58 +1046,46 @@ def main():
                         input_dict['repr1_mapped'] = repr1_mapped
                         input_dict['r0m_red'] = r0m_red
                         input_dict['r1m_red'] = r1m_red
+                    elif align_reps is not None and align_reps is not False and load_outputs:
+                        with open(f'{output_root_folder}/r0_mapping.pkl', 'rb') as f:
+                            r0m_hist = pkl.load(f)
+                        with open(f'{output_root_folder}/r1_mapping.pkl', 'rb') as f:
+                            r1m_hist = pkl.load(f)
+                        repr0_mapped = r0m_hist['mapping_layer'](representations[0]).detach()
+                        repr1_mapped = r1m_hist['mapping_layer'](representations[1]).detach()
+                        red = PCA(n_components=2)
+                        r0m_red = red.fit_transform(repr0_mapped)
+                        r1m_red = red.fit_transform(repr1_mapped)
+                        input_dict['repr0_mapped'] = repr0_mapped
+                        input_dict['repr1_mapped'] = repr1_mapped
+                        input_dict['r0m_red'] = r0m_red
+                        input_dict['r1m_red'] = r1m_red
 
-                    if guidance == 'classifier':
-                        input_dict['preds'] = preds
+                    input_dict['preds'] = preds
 
-                    # if method_name != 'rdx_nb_lb_eigc' and method_name != 'rdx_nb_lb_pagerank':
-                    #     continue
-
-                    # if method_name != 'rdx_zpls_lb_spectral':
-                    #     continue
-
-                    # if method != 'kmeans' and method != 'nmf' and method != 'pca' and method != 'cnmf':
-                    #     continue
-                    # if method != 'classification':
-                    #     continue
                     print(method_name)
-                    load_outputs = False
 
                     start_time = time.time()
                     if method == 'cka':
-                        # continue
                         run_cka(input_dict)
                     elif method == 'classification':
-                        # continue
-                        output_dict = run_clf(input_dict)
-                        if guidance == 'classifier':
-                            preds = output_dict['preds'].T
+                        output_dict = run_clf(input_dict, load_outputs=load_outputs)
+                        preds = output_dict['preds'].T
                     elif method == 'rdx':
-                        # continue
-                        if input_dict['method_name'] != 'rdx_nb_lb_spectral':
-                            continue
                         run_rdx(input_dict, load_outputs=load_outputs)
                     elif method == 'kmeans':
-                        continue
                         run_kmeans(input_dict, load_outputs=load_outputs)
                     elif method == 'nmf':
-                        continue
                         run_nmf(input_dict, load_outputs=load_outputs)
                     elif method == 'pca':
-                        # continue
                         run_pca(input_dict, load_outputs=load_outputs)
                     elif method == 'sae':
-                        continue
-                        # plt.imsave(f'{output_root_folder}/img800.png', image_samples[1][800][0])
                         run_sae(input_dict, load_outputs=load_outputs)
                     elif method == 'topk_sae':
-                        continue
                         run_topk_sae(input_dict, load_outputs=load_outputs)
                     elif method == 'usae':
-                        continue
                         run_usae(input_dict, load_outputs=load_outputs)
                     elif method == 'nlmcd':
-                        continue
                         run_nlmcd(input_dict, load_outputs=load_outputs)
                     else:
                         raise ValueError(f'Unknown method: {method}')
@@ -1184,7 +1098,6 @@ def main():
             if act_hooks[mi] is not None:
                 act_hooks[mi].reset_activation_dict()
 
-        ci += 1
 
 
 if __name__ == '__main__':

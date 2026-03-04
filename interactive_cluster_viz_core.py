@@ -513,8 +513,8 @@ function L(pair) {
     if (cm === 'layerwise') {
         // Layerwise: always show L0, RDX, L1 order for both directions
         return {
-            dir10: 'Convergence (10)',
-            dir01: 'Spreading (01)',
+            dir10: 'Convergence',
+            dir01: 'Spreading',
             r0Title: pair.ln1 + ' (pre)',
             r1Title: pair.ln2 + ' (post)',
             pairLabel: pair.ln1 + ' \\u2192 ' + pair.ln2,
@@ -641,8 +641,8 @@ function updateRankLabel() {
     }
     var entry = ranking[ri];
     label.textContent = 'Rank ' + (ri + 1) + '/' + ranking.length +
-        ' | #' + entry.idx + ' | Aff: ' + entry.nhood_am_sum.toFixed(4) +
-        (entry.nhood_diff_sum !== undefined ? ' | Diff: ' + entry.nhood_diff_sum.toFixed(4) : '');
+        ' | #' + entry.idx + ' | RDX Aff Sum: ' + entry.nhood_am_sum.toFixed(4) +
+        (entry.nhood_diff_sum !== undefined ? ' | RDX Diff Sum: ' + entry.nhood_diff_sum.toFixed(4) : '');
 }
 
 function selectRank(ri) {
@@ -653,9 +653,12 @@ function selectRank(ri) {
     updateRankLabel();
     var entry = ranking[ri];
     lastClickedIdx = entry.idx;
+    document.getElementById('idx-jump').value = entry.idx;
+    document.getElementById('idx-jump').style.borderColor = '';
     document.getElementById('save-snapshot-btn').style.display = '';
     if (activeTab === 'matrix') showMatrixAnalysis(entry.idx);
     else showNeighborAnalysis(entry.idx);
+    updateHeadImportance(entry.idx);
     // Update scatter highlight
     if (typeof highlightIdx !== 'undefined') {
         highlightIdx = entry.idx;
@@ -672,11 +675,41 @@ function stepRank(delta) {
     selectRank(newVal);
 }
 
+function jumpToIdx() {
+    var input = document.getElementById('idx-jump');
+    var targetIdx = parseInt(input.value);
+    if (isNaN(targetIdx)) return;
+    var ranking = getCurrentRanking();
+    for (var ri = 0; ri < ranking.length; ri++) {
+        if (ranking[ri].idx === targetIdx) {
+            selectRank(ri);
+            input.style.borderColor = '';
+            return;
+        }
+    }
+    // Index not in current ranking — show it directly without rank selection
+    lastClickedIdx = targetIdx;
+    document.getElementById('save-snapshot-btn').style.display = '';
+    if (activeTab === 'matrix') showMatrixAnalysis(targetIdx);
+    else showNeighborAnalysis(targetIdx);
+    updateHeadImportance(targetIdx);
+    if (typeof highlightIdx !== 'undefined') {
+        highlightIdx = targetIdx;
+        if (typeof updateHighlight === 'function') updateHighlight();
+    }
+    input.style.borderColor = 'orange';
+}
+
 (function() {
     var slider = document.getElementById('rank-slider');
     slider.addEventListener('input', function() {
         selectRank(parseInt(this.value));
     });
+    var idxInput = document.getElementById('idx-jump');
+    idxInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { jumpToIdx(); idxInput.blur(); }
+    });
+    idxInput.addEventListener('blur', function() { jumpToIdx(); });
 })();
 
 function diffColor(v) {
@@ -893,7 +926,7 @@ function showMatrixAnalysis(imgIdx) {
 
         // Diff row
         if (g.diff && g.diff.length > 0) {
-        html += '<div class="matrix-label">diff</div><div class="matrix-row">';
+        html += '<div class="matrix-label">RDX diff</div><div class="matrix-row">';
         g.diff.forEach(function(v) {
             var bg = diffColor(v);
             var fg = diffTextColor(v);
@@ -903,7 +936,7 @@ function showMatrixAnalysis(imgIdx) {
         }
 
         // Affinity row
-        // html += '<div class="matrix-label">affinity</div><div class="matrix-row">';
+        // html += '<div class="matrix-label">RDX affinity</div><div class="matrix-row">';
         // g.am.forEach(function(v) {
         //    var norm = (v - amMin) / amRange;
         //    var bg = amColor(norm);
@@ -923,7 +956,7 @@ function showMatrixAnalysis(imgIdx) {
 
 def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbs_dir, labels,
                               output_path, ui_config=None, matrix_data=None, ranking_data=None,
-                              knn_data=None, lin_data=None, lazy_load=False):
+                              knn_data=None, lin_data=None, lazy_load=False, patching_data=None):
     """Generate HTML with side-by-side pre/post scatter + animated transition mode."""
     print('Generating transition HTML...')
 
@@ -947,10 +980,46 @@ def generate_html(embeddings, layer_names, rdx_data, neighbor_data, thumbs_dir, 
         'show_post_spatial_nn': True,
         'K': 8,
         'comparison_mode': 'cross_model',
+        'show_head_importance': False,
         'dark': False,
     }
     if ui_config is not None:
         c.update(ui_config)
+
+    # Prepare head importance data from patching results
+    if c.get('show_head_importance') and patching_data is not None:
+        sel_metric = patching_data['metrics']['rdx_topk_nb_dist_delta_selectivity']
+        n_samples_2x = len(sel_metric[0][0])
+        n_samp = n_samples_2x // 2
+        # Build layer_pairs list early to use for keys
+        _lp_list = []
+        for i in range(len(layer_names) - 1):
+            ln1, ln2 = layer_names[i], layer_names[i + 1]
+            _lp_list.append((ln1, ln2))
+        head_importance = {}
+        for bi, (ln1, ln2) in enumerate(_lp_list):
+            if bi >= len(sel_metric):
+                break
+            pk = ln1 + '||' + ln2
+            num_heads = len(sel_metric[bi])
+            # Compute max absolute value per direction across all heads and samples
+            max_01 = 0.0
+            max_10 = 0.0
+            for hi in range(num_heads):
+                for si in range(n_samp):
+                    max_01 = max(max_01, abs(sel_metric[bi][hi][si]))
+                    max_10 = max(max_10, abs(sel_metric[bi][hi][n_samp + si]))
+            max_01 = max_01 or 1.0
+            max_10 = max_10 or 1.0
+            hi_01 = []
+            hi_10 = []
+            for si in range(n_samp):
+                hi_01.append([round(sel_metric[bi][hi][si] / max_01, 4) for hi in range(num_heads)])
+                hi_10.append([round(sel_metric[bi][hi][n_samp + si] / max_10, 4) for hi in range(num_heads)])
+            head_importance[pk] = {'01': hi_01, '10': hi_10}
+        head_importance_json = json.dumps(head_importance)
+    else:
+        head_importance_json = '{}'
 
     # Theme colors
     if c['dark']:
@@ -1063,6 +1132,9 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: var(--accent); font
     border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center;
     padding: 0; font-family: 'Source Sans 3', sans-serif; }}
 .rank-step-btn:hover {{ background: var(--hover); }}
+.head-imp-cell {{ width:18px; height:18px; border-radius:2px; border:1px solid var(--border);
+    display:flex; align-items:center; justify-content:center;
+    font-size:8px; color:var(--text); cursor:default; }}
 #rank-label {{ font-size: {c['font_idx_label'] + 2}px; color: var(--muted); flex-basis: 100%; }}
 .matrix-group {{ margin: 14px 0; }}
 .matrix-group h3 {{ margin: 6px 0; font-size: {c['font_h3']}px; font-family: 'Source Sans 3', sans-serif;
@@ -1102,6 +1174,24 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: var(--accent); font
 #anim-controls button:hover {{ opacity: 0.85; }}
 #anim-slider {{ flex: 1; height: 6px; cursor: pointer; accent-color: var(--accent); }}
 #anim-label {{ font-size: {c['font_info']}px; min-width: 100px; text-align: right; color: var(--muted); }}
+.help-btn {{ position:fixed; top:12px; right:16px; z-index:100; width:32px; height:32px;
+    border-radius:50%; border:1px solid var(--control-border); background:var(--control-bg);
+    color:var(--muted); font-size:16px; font-weight:700; cursor:pointer;
+    font-family:'Source Sans 3',sans-serif; display:flex; align-items:center; justify-content:center; }}
+.help-btn:hover {{ background:var(--hover); color:var(--accent); }}
+.help-overlay {{ display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.5); z-index:9998; justify-content:center; align-items:center; cursor:pointer; }}
+.help-overlay.active {{ display:flex; }}
+.help-card {{ background:var(--panel-bg); color:var(--text); border-radius:10px; padding:28px 32px;
+    max-width:520px; width:90%; cursor:default; font-family:'Source Sans 3',sans-serif;
+    box-shadow:0 8px 32px rgba(0,0,0,0.2); }}
+.help-card h2 {{ font-family:'Lora',serif; font-size:20px; margin:0 0 16px 0; color:var(--accent); }}
+.help-card table {{ width:100%; border-collapse:collapse; font-size:14px; }}
+.help-card td {{ padding:5px 8px; border-bottom:1px solid var(--border); vertical-align:top; }}
+.help-card td:first-child {{ font-weight:600; white-space:nowrap; color:var(--accent); width:40%; }}
+.help-card .help-close {{ margin-top:16px; background:var(--accent); color:#fff; border:none;
+    padding:8px 24px; border-radius:5px; cursor:pointer; font-size:14px; font-weight:600;
+    font-family:'Source Sans 3',sans-serif; }}
 </style>
 </head>
 <body>
@@ -1120,16 +1210,42 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: var(--accent); font
     </div>
     <label>Color by:
         <select id="color-mode-select" onchange="onColorModeChange()">
-            <option value="aff">NBHD Aff Sum</option>
-            <option value="diff">NBHD Diff Sum</option>
-            <option value="cluster" selected>Cluster</option>
+            <option value="diff" selected>RDX Diff Sum</option>
+            <option value="aff">RDX Aff sum</option>
+            <option value="cluster">Sepctral Cluster</option>
             <option value="label">Label</option>
         </select>
     </label>
 </div>
 
+<button class="help-btn" onclick="toggleHelp()">?</button>
+<div id="help-overlay" class="help-overlay" onclick="closeHelp()">
+  <div class="help-card" onclick="event.stopPropagation()">
+    <h2>How to Use</h2>
+    <table>
+      <tr><td>Click scatter point</td><td>Select an image and show its neighborhood</td></tr>
+      <tr><td>&#9664; &#9654; / slider</td><td>Step through ranked images</td></tr>
+      <tr><td>Idx box + Enter</td><td>Jump to a specific image index</td></tr>
+      <tr><td>Pin checkbox</td><td>Keep selected image when switching layers</td></tr>
+      <tr><td>&#8592; &#8594; in modal</td><td>Cycle through neighbor images in enlarged view</td></tr>
+      <tr><td>Escape</td><td>Close modal or this help overlay</td></tr>
+      <tr><td>Side-by-Side / Animate</td><td>Toggle scatter visualization mode</td></tr>
+      <tr><td>Color by</td><td>Change how scatter points are colored</td></tr>
+      <tr><td>Head Importance</td><td>Per-head patching impact on selected point (if available)</td></tr>
+      <tr><td>Save Snapshot</td><td>Export current view as a standalone HTML file</td></tr>
+    </table>
+    <button class="help-close" onclick="closeHelp()">Got it</button>
+  </div>
+</div>
+
 <div class="container">
     <div class="panel" id="left-panel">
+        <div id="head-importance-bar" style="display:none; padding:4px 0; margin-bottom:4px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span id="head-imp-layer-label" style="font-size:12px; color:var(--muted); font-family:'Source Sans 3',sans-serif; font-weight:600;"></span>
+                <div id="head-imp-cells" style="display:flex; gap:2px; flex-wrap:wrap;"></div>
+            </div>
+        </div>
         <!-- Side-by-side view -->
         <div id="sbs-view">
             <div id="sbs-legend"></div>
@@ -1164,6 +1280,8 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: var(--accent); font
             <button class="rank-step-btn" onclick="stepRank(-1)">&#9664;</button>
             <input type="range" id="rank-slider" min="0" max="0" value="0">
             <button class="rank-step-btn" onclick="stepRank(1)">&#9654;</button>
+            <input type="number" id="idx-jump" placeholder="idx" style="width:60px; height:24px; border:1px solid var(--control-border); border-radius:4px; background:var(--control-bg); color:var(--text); font-size:12px; font-family:'Source Sans 3',sans-serif; padding:0 4px; text-align:center;" title="Jump to image index">
+            <label style="display:flex; align-items:center; gap:3px; font-size:12px; color:var(--muted); font-family:'Source Sans 3',sans-serif; cursor:pointer; white-space:nowrap;"><input type="checkbox" id="pin-idx-cb" style="accent-color:var(--accent); cursor:pointer;"> Pin</label>
             <button id="save-snapshot-btn" onclick="saveSnapshot()" style="display:none; background:var(--accent); color:#fff; border:1px solid var(--accent); padding:4px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; white-space:nowrap; font-family:'Source Sans 3',sans-serif;">Save Snapshot</button> <span id="rank-label"></span>
         </div>
         <div id="right-content">
@@ -1173,16 +1291,20 @@ h2 {{ margin: 0 0 8px 0; font-size: {c['font_h2']}px; color: var(--accent); font
 </div>
 
 <div id="img-modal" class="img-modal-overlay" onclick="closeModal()">
-    <div class="modal-pair" onclick="event.stopPropagation()">
-        <div class="modal-img-container">
-            <img id="modal-selected-img" src="">
-            <div id="modal-selected-label" class="modal-label"></div>
+    <div style="display:flex; flex-direction:column; align-items:center; gap:12px;" onclick="event.stopPropagation()">
+        <div class="modal-pair">
+            <div class="modal-img-container">
+                <img id="modal-selected-img" src="">
+                <div id="modal-selected-label" class="modal-label"></div>
+            </div>
+            <div class="modal-img-container">
+                <img id="modal-neighbor-img" src="">
+                <div id="modal-neighbor-label" class="modal-label"></div>
+            </div>
         </div>
-        <div class="modal-img-container">
-            <img id="modal-neighbor-img" src="">
-            <div id="modal-neighbor-label" class="modal-label"></div>
-        </div>
+        <div id="modal-values" style="display:flex; gap:12px; align-items:center; background:rgba(0,0,0,0.7); padding:6px 16px; border-radius:4px;"></div>
     </div>
+    <div style="position:fixed; bottom:16px; right:24px; color:#888; font-size:11px; font-family:'Source Sans 3',sans-serif;">&#8592; &#8594; to cycle images</div>
 </div>
 
 {'<!-- Data loaded lazily -->' if lazy_load else '<script src="neighbor_data.js"></script><script src="matrix_data.js"></script><script src="ranking_data.js"></script>'}
@@ -1199,6 +1321,7 @@ const LIN_DATA = {json.dumps(lin_data or {})};
 const LABELS = {json.dumps(labels_list)};
 const LAYER_PAIRS = {json.dumps(layer_pairs)};
 const UI = {json.dumps(c)};
+const HEAD_IMPORTANCE = {head_importance_json};
 
 // const CLUSTER_COLORS = ['#888888', '#e94560', '#0f3460', '#533483', '#e9b450', '#16c79a'];
 const CLUSTER_COLORS = ["#7f7f7f", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#1b9e77", "#bcbd22", "#17becf", "#7570B3FF", "#E7298AFF"];
@@ -1209,7 +1332,7 @@ let animRAF = null;
 let highlightIdx = null;  // currently clicked point index
 let activeTab = 'matrix';
 let lastClickedIdx = null;
-let colorMode = 'aff';  // 'cluster', 'label', 'aff', or 'diff'
+let colorMode = 'diff';  // 'cluster', 'label', 'aff', or 'diff'
 
 // Generate distinct colors for dataset labels
 const UNIQUE_LABELS = [...new Set(LABELS)].sort((a, b) => a - b);
@@ -1280,6 +1403,35 @@ function getPair() {{
     return LAYER_PAIRS[parseInt(select.value)];
 }}
 
+function updateHeadImportance(imgIdx) {{
+    var bar = document.getElementById('head-importance-bar');
+    if (!UI.show_head_importance || Object.keys(HEAD_IMPORTANCE).length === 0) {{
+        bar.style.display = 'none'; return;
+    }}
+    var pk = getPairKey(), dir = getDirection();
+    var data = HEAD_IMPORTANCE[pk] && HEAD_IMPORTANCE[pk][dir];
+    if (!data || imgIdx < 0 || imgIdx >= data.length) {{ bar.style.display = 'none'; return; }}
+    var scores = data[imgIdx];
+    var cells = document.getElementById('head-imp-cells');
+    cells.innerHTML = '';
+    for (var hi = 0; hi < scores.length; hi++) {{
+        var intensity = Math.abs(scores[hi]);
+        var r = 255;
+        var g = Math.round(255 - intensity * 155);
+        var b = Math.round(255 - intensity * 220);
+        var cell = document.createElement('div');
+        cell.className = 'head-imp-cell';
+        cell.style.background = 'rgb(' + r + ',' + g + ',' + b + ')';
+        cell.title = 'Head ' + hi + ': ' + scores[hi].toFixed(3);
+        cell.textContent = hi;
+        cells.appendChild(cell);
+    }}
+    var pair = getPair();
+    document.getElementById('head-imp-layer-label').textContent =
+        pair.ln2 + ' Head Importance';
+    bar.style.display = '';
+}}
+
 function switchTab(tab) {{
     activeTab = tab;
     document.querySelectorAll('.tab-btn').forEach(b => {{
@@ -1338,6 +1490,52 @@ function showModalImage(imgIdx) {{
     // Show neighbor image on the right
     document.getElementById('modal-neighbor-img').src = thumbSrc(imgIdx);
     document.getElementById('modal-neighbor-label').textContent = 'Neighbor #' + imgIdx + ' | Label: ' + LABELS[imgIdx];
+    // Show matrix values centered below with matching colors
+    var valDiv = document.getElementById('modal-values');
+    valDiv.innerHTML = '';
+    valDiv.style.display = 'none';
+    if (lastClickedIdx !== null && lastClickedIdx !== imgIdx) {{
+        var pk = getPairKey(), dir = getDirection();
+        var md = MATRIX_DATA[pk] && MATRIX_DATA[pk][dir] && MATRIX_DATA[pk][dir][lastClickedIdx];
+        if (md) {{
+            // Compute dmMin/dmMax across all groups for normalization
+            var dmMin = Infinity, dmMax = -Infinity;
+            ['r0_nn', 'rdx_nn', 'r1_nn'].forEach(function(gk) {{
+                var gg = md[gk];
+                if (gg && gg.dm0) gg.dm0.forEach(function(v) {{ if (v < dmMin) dmMin = v; if (v > dmMax) dmMax = v; }});
+                if (gg && gg.dm1) gg.dm1.forEach(function(v) {{ if (v < dmMin) dmMin = v; if (v > dmMax) dmMax = v; }});
+            }});
+            var dmRange = dmMax - dmMin || 1;
+            var groups = ['r0_nn', 'rdx_nn', 'r1_nn'];
+            for (var gi = 0; gi < groups.length; gi++) {{
+                var g = md[groups[gi]];
+                if (!g || !g.indices) continue;
+                var pos = g.indices.indexOf(imgIdx);
+                if (pos === -1) continue;
+                var found = false;
+                function addBadge(label, val, bg, fg) {{
+                    var s = document.createElement('span');
+                    s.textContent = label + ': ' + val.toFixed(3);
+                    s.style.cssText = 'background:' + bg + ';color:' + fg + ';padding:3px 10px;border-radius:3px;font-size:16px;font-family:Source Sans 3,sans-serif;font-weight:600;';
+                    valDiv.appendChild(s);
+                    found = true;
+                }}
+                if (g.dm0 && g.dm0[pos] !== undefined) {{
+                    var norm = (g.dm0[pos] - dmMin) / dmRange;
+                    addBadge('Pre Dist', g.dm0[pos], dmColor(norm), dmTextColor(norm));
+                }}
+                if (g.dm1 && g.dm1[pos] !== undefined) {{
+                    var norm = (g.dm1[pos] - dmMin) / dmRange;
+                    addBadge('Post Dist', g.dm1[pos], dmColor(norm), dmTextColor(norm));
+                }}
+                if (g.diff && g.diff[pos] !== undefined) {{
+                    addBadge('Diff', g.diff[pos], diffColor(g.diff[pos]), diffTextColor(g.diff[pos]));
+                }}
+                if (found) valDiv.style.display = 'flex';
+                break;
+            }}
+        }}
+    }}
     overlay.classList.add('active');
 }}
 
@@ -1366,12 +1564,27 @@ function navigateModal(delta) {{
     showModalImage(imgIdx);
 }}
 
+function toggleHelp() {{
+    document.getElementById('help-overlay').classList.toggle('active');
+}}
+function closeHelp() {{
+    document.getElementById('help-overlay').classList.remove('active');
+}}
+
 document.addEventListener('keydown', function(e) {{
+    var helpEl = document.getElementById('help-overlay');
+    if (helpEl.classList.contains('active')) {{
+        if (e.key === 'Escape') {{ closeHelp(); e.preventDefault(); }}
+        return;
+    }}
     const overlay = document.getElementById('img-modal');
-    if (!overlay.classList.contains('active')) return;
-    if (e.key === 'Escape') {{ closeModal(); e.preventDefault(); }}
-    else if (e.key === 'ArrowLeft') {{ navigateModal(-1); e.preventDefault(); }}
-    else if (e.key === 'ArrowRight') {{ navigateModal(1); e.preventDefault(); }}
+    if (overlay.classList.contains('active')) {{
+        if (e.key === 'Escape') {{ closeModal(); e.preventDefault(); }}
+        else if (e.key === 'ArrowLeft') {{ navigateModal(-1); e.preventDefault(); }}
+        else if (e.key === 'ArrowRight') {{ navigateModal(1); e.preventDefault(); }}
+        return;
+    }}
+    if (e.key === '?') {{ toggleHelp(); e.preventDefault(); }}
 }});
 
 // ── Save Snapshot ──────────────────────────────────────────────────
@@ -1450,24 +1663,25 @@ function renderSnapshotHTML(data) {{
 
     // Modal
     h += '<div id="snap-modal" class="modal-overlay" onclick="closeSnapModal()">';
-    h += '<div class="modal-pair" onclick="event.stopPropagation()">';
+    h += '<div style="display:flex;flex-direction:column;align-items:center;gap:12px;" onclick="event.stopPropagation()">';
+    h += '<div class="modal-pair">';
     h += '<div class="modal-cont"><img id="snap-modal-sel"><div id="snap-modal-sel-label" class="modal-label"></div></div>';
     h += '<div class="modal-cont"><img id="snap-modal-nb"><div id="snap-modal-nb-label" class="modal-label"></div></div>';
+    h += '</div>';
+    h += '<div id="snap-modal-values" style="display:none;gap:12px;align-items:center;background:rgba(0,0,0,0.7);padding:6px 16px;border-radius:4px;color:#fff;font-size:16px;font-family:Source Sans 3,sans-serif;"></div>';
     h += '</div></div>';
 
     h += '<article>';
-    h += '<h1>RDX Neighbor Snapshot</h1>';
-    h += '<div class="post-meta">Image #' + data.imgIdx + ' &middot; Cluster ' + md.cluster + ' &middot; Direction ' + data.direction + '</div>';
+    h += '<h1>Image #' + data.imgIdx + ' NBHD Snapshot</h1>';
 
     // Header with selected image
     h += '<div class="header">';
     h += '<img src="' + thumbSrc(data.imgIdx) + '" onclick="showSingle(' + data.imgIdx + ')">';
     h += '<div class="header-info">';
-    h += '<strong>Image #' + data.imgIdx + '</strong><br>';
+    // h += '<strong>Image #' + data.imgIdx + '</strong><br>';
     h += 'Label: ' + LABELS[data.imgIdx] + '<br>';
-    h += 'Cluster: ' + md.cluster + '<br>';
+    h += 'RDX Spectral Cluster: ' + md.cluster + '<br>';
     h += 'Layer Pair: ' + data.lb.pairLabel + '<br>';
-    h += 'Direction: ' + data.direction;
     h += '</div></div>';
 
     // Groups
@@ -1505,7 +1719,7 @@ function renderSnapshotHTML(data) {{
             h += '</div>';
         }}
         if (g.diff && g.diff.length > 0) {{
-            h += '<div class="val-row-label">Diff</div><div class="val-row">';
+            h += '<div class="val-row-label">RDX diff</div><div class="val-row">';
             g.diff.forEach(function(v) {{
                 h += '<div class="val" style="background:' + diffColor(v) + ';color:' + diffTextColor(v) + '">' + v.toFixed(2) + '</div>';
             }});
@@ -1515,7 +1729,7 @@ function renderSnapshotHTML(data) {{
     }});
 
     h += '</article>';
-    h += '<footer>Generated by RDX Interactive Cluster Visualization</footer>';
+    h += '<footer>Generated by RDX Interactive Visualization</footer>';
 
     // Inline JS for modal with arrow key navigation
     h += '<script>';
@@ -1523,6 +1737,26 @@ function renderSnapshotHTML(data) {{
     h += 'function tSrc(idx) {{ return THUMBS_DIR + "/" + String(idx).padStart(4, "0") + ".jpg"; }}';
     h += 'var LABELS_SNAP = ' + JSON.stringify(LABELS) + ';';
     h += 'var selIdx = ' + data.imgIdx + ';';
+    // Build neighbor value lookup via JSON
+    var nbLookup = {{}};
+    ['r0_nn', 'rdx_nn', 'r1_nn'].forEach(function(gk) {{
+        var g = md[gk];
+        if (!g || !g.indices) return;
+        g.indices.forEach(function(ni, ki) {{
+            if (nbLookup[ni]) return;
+            var entry = {{}};
+            if (g.dm0 && g.dm0[ki] !== undefined) entry.dm0 = g.dm0[ki];
+            if (g.dm1 && g.dm1[ki] !== undefined) entry.dm1 = g.dm1[ki];
+            if (g.diff && g.diff[ki] !== undefined) entry.diff = g.diff[ki];
+            nbLookup[ni] = entry;
+        }});
+    }});
+    h += 'var NB_VALS = ' + JSON.stringify(nbLookup) + ';';
+    h += 'var DM_MIN = ' + data.dmMin + ', DM_RANGE = ' + data.dmRange + ';';
+    h += 'function dmColor(v) {{ var t = Math.min(1, Math.max(0, v)); return "rgb(255," + Math.round(255*(1-t*0.7)) + "," + Math.round(255*(1-t*0.9)) + ")"; }}';
+    h += 'function dmTextColor(v) {{ return v > 0.6 ? "#fff" : "#000"; }}';
+    h += 'function diffColor(v) {{ var r,g,b; if(v<0){{ var t=Math.min(1,-v); r=Math.round(255*(1-t)); g=r; b=255; }} else {{ var t=Math.min(1,v); r=255; g=Math.round(255*(1-t)); b=g; }} return "rgb("+r+","+g+","+b+")"; }}';
+    h += 'function diffTextColor(v) {{ return Math.abs(v) > 0.5 ? "#fff" : "#000"; }}';
     h += 'var allCells = []; var curCellIdx = -1;';
     h += 'document.querySelectorAll(".thumbs .cell").forEach(function(c) {{ allCells.push(c); }});';
     h += 'function closeSnapModal() {{ document.getElementById("snap-modal").classList.remove("active"); curCellIdx = -1; }}';
@@ -1537,6 +1771,16 @@ function renderSnapshotHTML(data) {{
     h += '  document.getElementById("snap-modal-sel-label").style.display = "";';
     h += '  document.getElementById("snap-modal-nb").src = tSrc(idx);';
     h += '  document.getElementById("snap-modal-nb-label").textContent = "Neighbor #" + idx + " | Label: " + LABELS_SNAP[idx];';
+    h += '  var vd = document.getElementById("snap-modal-values"); vd.innerHTML = ""; vd.style.display = "none";';
+    h += '  var nv = NB_VALS[idx];';
+    h += '  if (nv) {{';
+    h += '    var found = false;';
+    h += '    function addB(label, val, bg, fg) {{ var s = document.createElement("span"); s.textContent = label + ": " + val.toFixed(3); s.style.cssText = "background:" + bg + ";color:" + fg + ";padding:3px 10px;border-radius:3px;font-size:16px;font-family:Source Sans 3,sans-serif;font-weight:600;"; vd.appendChild(s); found = true; }}';
+    h += '    if (nv.dm0 !== undefined) {{ var n = (nv.dm0 - DM_MIN) / DM_RANGE; addB("Pre Dist", nv.dm0, dmColor(n), dmTextColor(n)); }}';
+    h += '    if (nv.dm1 !== undefined) {{ var n = (nv.dm1 - DM_MIN) / DM_RANGE; addB("Post Dist", nv.dm1, dmColor(n), dmTextColor(n)); }}';
+    h += '    if (nv.diff !== undefined) addB("Diff", nv.diff, diffColor(nv.diff), diffTextColor(nv.diff));';
+    h += '    if (found) vd.style.display = "flex";';
+    h += '  }}';
     h += '  m.classList.add("active");';
     h += '}}';
     h += 'function openSnap(el, sIdx, nbIdx) {{';
@@ -1871,11 +2115,11 @@ function buildScalarTraces(emb, valueKey, colorscale, cmid, title) {{
 
 function buildDiffTraces(emb) {{
     // Blue (neg) -> White (0) -> Red (pos), centered at 0
-    return buildScalarTraces(emb, 'nhood_diff_sum', [[0,'blue'],[0.5,'white'],[1,'red']], 0, 'NBHD Diff Sum');
+    return buildScalarTraces(emb, 'nhood_diff_sum', [[0,'blue'],[0.5,'white'],[1,'red']], 0, 'RDX diff sum');
 }}
 
 function buildAffTraces(emb) {{
-    return buildScalarTraces(emb, 'nhood_am_sum', 'Magma', null, 'NBHD Aff Sum');
+    return buildScalarTraces(emb, 'nhood_am_sum', 'Magma', null, 'RDX Aff sum');
 }}
 
 // Build traces colored by classifier (KNN or linear) result
@@ -2048,6 +2292,7 @@ function attachClickHandler(divId) {{
             if (activeTab === 'neighbor') showNeighborAnalysis(highlightIdx);
             else showMatrixAnalysis(highlightIdx);
             updateHighlight();
+            updateHeadImportance(pt.customdata);
         }}
     }});
 }}
@@ -2298,6 +2543,8 @@ function animStep() {{
 
 // -- Main update dispatcher --
 function updateView() {{
+    var pinned = document.getElementById('pin-idx-cb').checked && lastClickedIdx !== null;
+    var pinnedIdx = lastClickedIdx;
     highlightIdx = null;
     lastClickedIdx = null;
     document.getElementById('save-snapshot-btn').style.display = 'none';
@@ -2307,13 +2554,25 @@ function updateView() {{
     updateRankingSlider();
     if (currentView === 'sbs') updateSideBySide();
     else {{ document.getElementById('anim-slider').value = 0; updateAnimFromSlider(); }}
-    // Auto-select top ranked image
-    var initRanking = getCurrentRanking();
-    if (initRanking.length > 0) {{
-        selectRank(0);
+    if (pinned) {{
+        // Restore pinned image
+        lastClickedIdx = pinnedIdx;
+        highlightIdx = pinnedIdx;
+        document.getElementById('idx-jump').value = pinnedIdx;
+        document.getElementById('save-snapshot-btn').style.display = '';
+        if (activeTab === 'matrix') showMatrixAnalysis(pinnedIdx);
+        else showNeighborAnalysis(pinnedIdx);
+        updateHeadImportance(pinnedIdx);
+        updateHighlight();
     }} else {{
-        document.getElementById('right-content').innerHTML =
-            '<div id="right-placeholder">Click a colored cluster point to see analysis</div>';
+        // Auto-select top ranked image
+        var initRanking = getCurrentRanking();
+        if (initRanking.length > 0) {{
+            selectRank(0);
+        }} else {{
+            document.getElementById('right-content').innerHTML =
+                '<div id="right-placeholder">Click a colored cluster point to see analysis</div>';
+        }}
     }}
 }}
 

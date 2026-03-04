@@ -67,71 +67,8 @@ class RDX:
         return output_dict
 
     @staticmethod
-    def apply_guid_labels(dm, guid_labels):
-
-        _p = guid_labels
-        null_val = dm.max() * 10
-        for pi in np.unique(_p):
-            mask = _p == pi
-            mask = torch.BoolTensor(mask)
-            not_mask = ~mask
-            print(dm[mask][:, not_mask].shape)
-            mask_idx = torch.where(mask)[0]
-            not_mask_idx = torch.where(not_mask)[0]
-
-            dm[mask_idx[:, None], not_mask_idx] = null_val
-            dm[not_mask_idx[:, None], mask_idx] = null_val
-        return dm
-
-    @staticmethod
     def construct_graph(repr0, repr1, params):
         sim_function = params['sim_function']
-
-        if params['guidance'] is not None:
-            if params['guidance'] == 'classifier':
-                guid_labels = params['preds']
-                print('Using classifier guidance')
-            elif params['guidance'] == 'ground_truth':
-                guid_labels = [params['dataset_labels'], params['dataset_labels']]
-                print('Using ground truth guidance')
-            elif params['guidance'] == 'tpfp':
-                guid_labels = []
-                for i in range(2):
-                    labels = np.zeros_like(params['dataset_labels'])
-                    for li, lab in enumerate(np.unique(params['dataset_labels'])):
-                        true_pred = (params['preds'][i] == lab) & (params['dataset_labels'] == lab)
-                        false_pred = (params['preds'][i] == lab) & (params['dataset_labels'] != lab)
-                        labels[true_pred] = 1 + (li * 2)
-                        labels[false_pred] = 2 + (li * 2)
-                    guid_labels.append(labels)
-            elif params['guidance'] == 'tpnfpn':
-                # this doesn't make sense in the multiclass setting
-                assert len(np.unique(params['dataset_labels'])) == 2
-                guid_labels = []
-                for i in range(2):
-                    labels = np.zeros_like(params['dataset_labels'])
-                    for li, lab in enumerate(np.unique(params['dataset_labels'])[:1]):
-                        true_pos = (params['preds'][i] == lab) & (params['dataset_labels'] == lab)
-                        false_pos = (params['preds'][i] == lab) & (params['dataset_labels'] != lab)
-                        true_neg = (params['preds'][i] != lab) & (params['dataset_labels'] != lab)
-                        false_neg = (params['preds'][i] != lab) & (params['dataset_labels'] == lab)
-                        labels[true_pos] = 1
-                        labels[true_neg] = 2
-                        labels[false_pos] = 3
-                        labels[false_neg] = 4
-                    guid_labels.append(labels)
-
-                # guid_labels = [labels,
-                #                (params['preds'][1] == params['dataset_labels']) & (params['dataset_labels'] == 1)
-                #                ]
-            elif params['guidance'] == 'true_pos':
-                guid_labels = [(params['preds'][0] == params['dataset_labels']) & (params['dataset_labels'] == 1),
-                               (params['preds'][1] == params['dataset_labels']) & (params['dataset_labels'] == 1)]
-            else:
-                raise ValueError(f"Unknown guidance {params['guidance']}")
-        else:
-            guid_labels = None
-
 
         if sim_function == 'neighborhood':
             beta = params.get('beta', 5)
@@ -158,10 +95,6 @@ class RDX:
 
             r1_am = torch.exp(-beta * r1_dm)
             r0_am = torch.exp(-beta * r0_dm)
-
-            if guid_labels is not None:
-                r0_dm = RDX().apply_guid_labels(r0_dm, guid_labels[0])
-                r1_dm = RDX().apply_guid_labels(r1_dm, guid_labels[1])
 
             if diff_function == 'locally_biased':
                 # needed because dm can be zero for mnd
