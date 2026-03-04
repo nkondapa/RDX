@@ -8,6 +8,16 @@
 - Paper was accepted to NeurIPS 2025!
 - NLMCD, TopK-SAE, and USAE added as baseline options
   - tested on mnist modification and cub experiments
+- Updated RDX algorithm (RDX v2) with classifier guidance, symmetrized distances, and filter thresholding. 
+  The original RDX algorithm is still available as an option (rdx_paper.py).
+  - Guidance - allows you to use a classifier to guide RDX clusters so they stay within prediction-coherent groups (e.g. true positives vs false positives).
+  - Symmetrized distances - Instead of symmetrizing the affinity matrix, we symmetrize the neighborhood distances. Reduces sensitivity to outlier points.
+  - Filter thresholding - Rather than filtering out the first cluster by default, we set a threshold and filter any clusters with a mean affinity below the threshold.
+- Added configs for classifier guided RDX on CLIP vs CLIP-iNat (Exp. 4a). 
+- Added configs for RDXv2 on CLIP vs CLIP-iNat (Exp. 4a). 
+- Added an interactive visualizer for easier exploration of RDX results. The visualizer can be generated for any new experiments.
+- Added experiments on BiomedCLIP and the RSNA Pneumonia dataset. There is a blog post with findings and an interactive visualizer available at: https://nkondapa.github.io/rdx-page/blog/rsna-biomedclip/.
+
 
 
 ### Setup
@@ -51,6 +61,35 @@ To visualize the results of the experiments, you can run:
 ```python analyze_explanations.py```. By default this will analyze the inat subset experiment (aligned) (Exp. 4a).
 There are several commented functions in the script that you can uncomment to visualize the results of other experiments.
 
+### Additional Experiments/Visualizations
+
+**5) BiomedCLIP layer-wise RDX on RSNA Pneumonia:**
+Applies RDX to compare pre-block layer representations and post-block layer representations of BiomedCLIP to reveal how
+representations of chest X-rays evolve through the network. Requires the
+[RSNA Pneumonia Detection Challenge](https://www.kaggle.com/competitions/rsna-pneumonia-detection-challenge) dataset.
+A live interactive visualizer is available at: https://nkondapa.github.io/rdx-page/blog/rsna-biomedclip/
+```bash
+python -m rsna_experiments.analyze_biomedclip --data_root /path/to/RSNA --output_dir outputs/rsna_biomedclip/
+```
+
+**5) iNaturalist with classifier guidance (CLIP vs CLIP-iNat, aligned):**
+Uses a TP/FP classifier to guide RDX clusters so they stay within prediction-coherent groups
+(e.g. true positives vs false positives). Requires the iNaturalist subset.
+```bash
+bash clip_vs_clipinat_inat_ar_guided.sh
+```
+
+**6) iNaturalist with RDX v2 (CLIP vs CLIP-iNat, aligned):**
+Uses the updated RDX v2 algorithm (symmetrized difference map, filter threshold) on the same
+CLIP vs CLIP-iNat comparison. Requires the iNaturalist subset.
+```bash
+bash clip_vs_clipinat_inat_ar_v2.sh
+```
+
+**Interactive visualizer for general cross-model comparisons:**
+For experiments 5–7 (and any custom cross-model comparison), an interactive HTML visualizer
+can be generated with `interactive_cluster_viz_general.py`. The shell scripts above already
+invoke it automatically after running the comparisons.
 
 ### Citation
 ```
